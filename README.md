@@ -12,9 +12,9 @@ Install Docker Desktop (or use a Linux Docker engine), then run:
 docker compose up --build -d
 ```
 
-Open **http://localhost:8787**. The HTTP proxy uses local port `8888` to avoid
-conflicting with services commonly using `8080`. Enter your gateway address, custom port, username
-and password, then select **Connect**. **Disconnect** stops the tunnel and blocks
+Open **http://localhost:48731**. The localhost ports are `48731` for the web UI,
+`48732` for SOCKS5, and `48733` for HTTP/HTTPS proxying. Enter your gateway
+address, custom port, username and password, then select **Connect**. **Disconnect** stops the tunnel and blocks
 proxy egress. Restarting the container does not reconnect automatically.
 
 Use **Test gateway** to check whether the gateway host and port accept a TCP
@@ -32,14 +32,14 @@ Use these proxy addresses in your apps:
 
 | Proxy | Address |
 | --- | --- |
-| SOCKS5 | `127.0.0.1:1080` |
-| HTTP / HTTPS CONNECT | `127.0.0.1:8888` |
+| SOCKS5 | `127.0.0.1:48732` |
+| HTTP / HTTPS CONNECT | `127.0.0.1:48733` |
 
 For example, after connecting:
 
 ```sh
-curl --proxy socks5h://127.0.0.1:1080 https://example.com
-curl --proxy http://127.0.0.1:8888 https://example.com
+curl --proxy socks5h://127.0.0.1:48732 https://example.com
+curl --proxy http://127.0.0.1:48733 https://example.com
 ```
 
 Use `socks5h` to resolve names inside the container. Apps that resolve names on
@@ -119,7 +119,7 @@ python3 -m unittest discover -s tests -v
 To preview the panel without Docker or connecting anywhere:
 
 ```sh
-FORTIPROXY_BIND=127.0.0.1 FORTIPROXY_RUNTIME=/tmp/fortiproxy-preview python3 -m app.server
+FORTIPROXY_BIND=127.0.0.1 FORTIPROXY_PORT=48731 FORTIPROXY_RUNTIME=/tmp/fortiproxy-preview python3 -m app.server
 ```
 
 Preview mode is for reviewing the UI. Actual VPN connections require the

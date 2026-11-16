@@ -7,7 +7,7 @@ const assert=require('node:assert/strict');
  const page=await browser.newPage({viewport:{width:1360,height:1000}});
  const errors=[];page.on('pageerror',e=>errors.push(e.message));
  let state='disconnected', submitted, profile={}, gatewayReachable=true;
- const snapshot=()=>({state,message:state==='connected'?'Tunnel connected. Proxy traffic is restricted to the VPN.':'Ready to connect.',connected_at:state==='connected'?new Date().toISOString():null,interface:state==='connected'?'ppp0':null,proxies:{socks:'127.0.0.1:1080',http:'127.0.0.1:8888'}});
+ const snapshot=()=>({state,message:state==='connected'?'Tunnel connected. Proxy traffic is restricted to the VPN.':'Ready to connect.',connected_at:state==='connected'?new Date().toISOString():null,interface:state==='connected'?'ppp0':null,proxies:{socks:'127.0.0.1:48732',http:'127.0.0.1:48733'}});
  await page.route('**/api/**',async route=>{
   const req=route.request(), path=new URL(req.url()).pathname;
   if(path==='/api/test-gateway'){

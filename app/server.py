@@ -221,7 +221,7 @@ class VPNManager:
         with self.lock:
             return {'state': self.state, 'message': self.message, 'connected_at': self.connected_at,
                     'interface': 'ppp0' if self.state == 'connected' else None,
-                    'proxies': {'socks': '127.0.0.1:1080', 'http': '127.0.0.1:8888'}}
+                    'proxies': {'socks': '127.0.0.1:48732', 'http': '127.0.0.1:48733'}}
 
     def connect(self, data):
         config = validate_config(data)
