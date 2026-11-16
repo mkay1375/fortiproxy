@@ -7,6 +7,9 @@ const disconnectButton = document.querySelector('#disconnect-button');
 const errorBox = document.querySelector('#form-error');
 const password = document.querySelector('#password');
 const otp = document.querySelector('#otp');
+const savePassword = document.querySelector('#save_password');
+const passwordSaveNote = document.querySelector('#password-save-note');
+let savedPasswordBinding = null;
 const badge = document.querySelector('#status-badge');
 const statusLabel = document.querySelector('#status-label');
 const statusTitle = document.querySelector('#status-title');
@@ -19,7 +22,7 @@ const gatewayMessage = document.querySelector('#gateway-test-message');
 let testingGateway = false;
 let gatewayVersion = 0;
 const profileMessage = document.querySelector('#profile-message');
-const profileFields = ['name', 'host', 'port', 'username', 'realm', 'trusted_cert', 'ignore_cert', 'otp_mode'];
+const profileFields = ['name', 'host', 'port', 'username', 'realm', 'trusted_cert', 'ignore_cert', 'otp_mode', 'save_password'];
 let profileReady = false;
 let saveTimer;
 let saveQueue = Promise.resolve();
@@ -91,6 +94,34 @@ async function request(path, data) {
   }
 }
 
+function passwordBinding(profile) {
+  return JSON.stringify([String(profile.host || '').trim(), Number(profile.port),
+    String(profile.username || '').trim(), String(profile.realm || '').trim()]);
+}
+
+function syncSavedPassword() {
+  const current = {};
+  for (const key of ['host', 'port', 'username', 'realm']) current[key] = form.elements.namedItem(key).value;
+  const reusable = savePassword.checked && savedPasswordBinding !== null
+    && savedPasswordBinding === passwordBinding(current);
+  password.required = !reusable;
+  password.placeholder = reusable ? 'Saved password' : '';
+  passwordSaveNote.textContent = !savePassword.checked
+    ? 'Password is not saved. One-time codes are never saved.'
+    : reusable ? 'Password saved locally, unencrypted. One-time codes are never saved.'
+    : 'Stores the base password locally, unencrypted. One-time codes are never saved.';
+}
+
+function applyPasswordMetadata(profile) {
+  savedPasswordBinding = profile.has_saved_password ? passwordBinding(profile) : null;
+  syncSavedPassword();
+}
+
+for (const key of ['host', 'port', 'username', 'realm', 'save_password']) {
+  form.elements.namedItem(key).addEventListener('input', syncSavedPassword);
+  form.elements.namedItem(key).addEventListener('change', syncSavedPassword);
+}
+
 function syncAuthenticationOptions() {
   const ignore = form.elements.namedItem('ignore_cert').checked;
   form.elements.namedItem('trusted_cert').disabled = ignore;
@@ -110,13 +141,17 @@ function saveProfile() {
     const input = form.elements.namedItem(key);
     data[key] = input.type === 'checkbox' ? input.checked : key === 'port' ? Number(input.value) : input.value.trim();
   }
+  if (savePassword.checked && password.value !== '') data.password = password.value;
   const version = ++saveVersion;
   profileMessage.textContent = 'Saving settings…';
   // Serialize writes so a slower older request cannot replace newer settings.
   const pending = saveQueue.then(() => request('/api/profile', data));
   saveQueue = pending.catch(() => {});
-  return pending.then(() => {
-    if (version === saveVersion) profileMessage.textContent = 'Settings saved on disk. Changes save automatically.';
+  return pending.then(profile => {
+    if (version === saveVersion) {
+      applyPasswordMetadata(profile);
+      profileMessage.textContent = 'Settings saved on disk. Changes save automatically.';
+    }
   }, error => {
     if (version === saveVersion) profileMessage.textContent = `Settings not saved: ${error.message}`;
     throw error;
@@ -136,6 +171,16 @@ for (const key of profileFields) {
   });
 }
 
+password.addEventListener('input', () => {
+  if (!profileReady || !savePassword.checked) return;
+  clearTimeout(saveTimer);
+  profileMessage.textContent = 'Unsaved changes…';
+  saveTimer = setTimeout(() => { void saveProfile().catch(() => {}); }, 400);
+});
+password.addEventListener('change', () => {
+  if (profileReady && savePassword.checked) void saveProfile().catch(() => {});
+});
+
 async function restoreProfile() {
   try {
     const profile = await request('/api/profile');
@@ -147,6 +192,7 @@ async function restoreProfile() {
       }
     }
     syncAuthenticationOptions();
+    applyPasswordMetadata(profile);
     profileReady = true;
     profileMessage.textContent = Object.keys(profile).length ? 'Saved settings restored. Changes save automatically.' : 'Connection settings save automatically on disk.';
   } catch {
@@ -208,6 +254,7 @@ form.addEventListener('submit', async (event) => {
   const data = Object.fromEntries(new FormData(form));
   data.port = Number(data.port);
   data.ignore_cert = form.elements.namedItem('ignore_cert').checked;
+  data.save_password = savePassword.checked;
   for (const key of ['name', 'host', 'username', 'realm', 'trusted_cert']) data[key] = (data[key] || '').trim();
   submitting = true;
   refreshVersion += 1;
@@ -215,9 +262,11 @@ form.addEventListener('submit', async (event) => {
   render();
   try {
     await saveProfile();
+    if (!form.reportValidity()) return;
     await request('/api/connect', data);
     password.value = '';
     otp.value = '';
+    syncSavedPassword();
   } catch (error) {
     showError(error.name === 'AbortError' ? 'The request timed out. Checking the connection status before you try again.' : error.message);
   } finally {

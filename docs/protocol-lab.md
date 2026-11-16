@@ -60,7 +60,10 @@ never mounted or modified by this harness.
 - Explicit disconnect and reconnect.
 - Server-side TLS tunnel termination while the peer's HTTP service remains
   reachable through the ordinary root route; all proxies must remain blocked.
-- Optional real UI gateway check, connect/disconnect, and clearing secret inputs.
+- Optional real UI gateway check, opt-in base-password persistence and removal,
+  reconnect with a fresh OTP, and clearing secret inputs. Closing the page is
+  verified to leave the VPN connected; a new page can still disconnect it.
+- System dark theme screenshots from the real connected UI.
 
 The existing `tests/integration_smoke.py` complements this lab with direct
 firewall, loopback/Docker-DNS, and inbound VPN-side listener isolation checks.

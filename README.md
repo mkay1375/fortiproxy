@@ -15,7 +15,9 @@ docker compose up --build -d
 Open **http://localhost:48731**. The localhost ports are `48731` for the web UI,
 `48732` for SOCKS5, and `48733` for HTTP/HTTPS proxying. Enter your gateway
 address, custom port, username and password, then select **Connect**. **Disconnect** stops the tunnel and blocks
-proxy egress. Restarting the container does not reconnect automatically.
+proxy egress. Closing the browser page leaves an established VPN running. Use **Disconnect**
+to stop it. Stopping/recreating the container or losing the tunnel also ends the
+connection; restarting the container does not reconnect automatically.
 
 Use **Test gateway** to check whether the gateway host and port accept a TCP
 connection from the container. This test has a five-second deadline and does not
@@ -51,8 +53,10 @@ TCP traffic; they do not provide a general UDP tunnel.
 
 Connection settings save automatically as you edit and are restored when you open
 the UI. The saved fields are connection name, gateway, port, username, realm,
-certificate settings and the one-time code format. Passwords and one-time codes are never included
-in the saved profile. The mode-0600 `/data/profile.json` file lives in the Compose
+certificate settings and the one-time code format. Password saving is off by
+default. **Save password** explicitly stores the base password in the same private
+file, unencrypted, in the local Docker data volume. One-time codes and the
+automatically concatenated password+code are never stored. The mode-0600 `/data/profile.json` file lives in the Compose
 `profile-data` named volume and survives container restarts and recreation.
 `docker compose down` retains it; `docker compose down -v` deletes it. Local
 Python previews use `data/profile.json` (or `FORTIPROXY_DATA`), excluded from Git.
@@ -62,10 +66,16 @@ configuration under `/run`, which is a tmpfs in Compose. The file is removed onc
 Credentials remain in process memory while needed; they are not logged or sent
 back through the status API. Re-enter credentials for the next connection.
 
+When saving is enabled, the UI shows a **Saved password** placeholder after
+reload; the profile API never returns the stored secret. Re-enter only the fresh
+one-time code when connecting. Unchecking Save password removes the stored
+password. Changing gateway, port, username or realm invalidates it unless you
+explicitly enter a new password for that connection.
+
 The one-time code field sits beside Password. By default it is appended directly
 to the password, with no separator. Additional settings also offers a separate
-gateway challenge mode. Neither the password, the code nor the combined value
-is included in the saved profile.
+gateway challenge mode. The code and combined value are never included in the saved profile; only
+the base password can be stored with Save password enabled.
 
 Certificate validation is enabled by default. Additional settings includes
 **Ignore certificate validation**, which accepts the certificate currently
@@ -164,3 +174,9 @@ against a minimal compatible peer in isolated Docker containers, including
 certificate rejection, bad passwords, DNS, HTTPS, disconnect and tunnel loss.
 The peer is a test fixture, not Fortinet FortiGate; vendor compatibility remains
 subject to testing against an SSL-VPN-capable FortiGate VM or appliance.
+
+## Appearance
+
+The Theme selector defaults to **System** and follows light/dark system changes
+while the page is open. Select **Light** or **Dark** for a manual override. Only
+the theme preference is kept in browser localStorage; credentials never are.

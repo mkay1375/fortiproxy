@@ -731,7 +731,7 @@ footer {
     gap: 9px;
     cursor: pointer;
 }
-.certificate-option input {
+.certificate-option input,.save-password-option input {
     width: 16px;
     height: 16px;
     margin: 0;
@@ -740,3 +740,11 @@ footer {
     accent-color: var(--blue);
 }
 #certificate-warning { color: var(--red); }
+
+.save-password-option {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 12px 0 0;
+    cursor: pointer;
+}

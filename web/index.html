@@ -41,7 +41,8 @@
               <div><label for="otp">One-time code <span class="optional">optional</span></label><input id="otp" name="otp" maxlength="128" autocomplete="one-time-code" type="password" inputmode="numeric" placeholder="Code"></div>
             </div>
             <p id="otp-note" class="field-note">The code is appended directly to your password, with no separator.</p>
-            <p class="field-note">Password and one-time code are used for this connection only and are never saved.</p>
+            <label class="save-password-option" for="save_password"><input id="save_password" name="save_password" type="checkbox"><span>Save password</span></label>
+            <p id="password-save-note" class="field-note">Password is not saved. One-time codes are never saved.</p>
             <details>
               <summary>Additional settings</summary>
               <div class="additional-fields">
