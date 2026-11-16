@@ -141,3 +141,12 @@ docker run --rm --network container:$(docker compose ps -q fortiproxy) \
 ```
 
 Desktop and mobile previews: [desktop](docs/desktop.png), [mobile](docs/mobile.png).
+
+## Local VPN protocol lab
+
+For a repeatable local TLS/login/PPP/proxy test, see
+[the protocol lab](docs/protocol-lab.md). It runs real openfortivpn and pppd
+against a minimal compatible peer in isolated Docker containers, including
+certificate rejection, bad passwords, DNS, HTTPS, disconnect and tunnel loss.
+The peer is a test fixture, not Fortinet FortiGate; vendor compatibility remains
+subject to testing against an SSL-VPN-capable FortiGate VM or appliance.
