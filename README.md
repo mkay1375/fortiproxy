@@ -1,8 +1,10 @@
-# Fortiproxy
+# Fortiproxy — Fortinet VPN in Docker
 
-A local web panel for Fortinet SSL VPN, with SOCKS5 and HTTP proxies for individual
-apps. VPN, DNS and routing stay inside one Linux Docker container; host network
-settings are unchanged.
+Run a Fortinet VPN connection inside a Docker container and use it from
+individual apps through SOCKS5 or HTTP proxies. VPN traffic, DNS, and routing
+stay inside the container, leaving your host’s network settings unchanged.
+
+![Fortiproxy panel showing VPN connection settings and local SOCKS5 and HTTP proxies](docs/desktop.png)
 
 ## Quick start
 
