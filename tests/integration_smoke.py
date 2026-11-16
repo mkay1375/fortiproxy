@@ -20,7 +20,7 @@ MARKER = b'fortiproxy-isolated-smoke'
 SERVER = '''import http.server, socketserver, threading, socket, struct
 class HTTP(http.server.BaseHTTPRequestHandler):
  def do_GET(self):
-  self.send_response(200); self.end_headers(); self.wfile.write(b"fortiproxy-isolated-smoke")
+  self.send_response(200); self.end_headers(); self.wfile.write(b"fortiproxy-isolated-smoke source=" + self.client_address[0].encode())
  def log_message(self,*args): pass
 class UDP(socketserver.BaseRequestHandler):
  def handle(self):
@@ -126,10 +126,14 @@ def main():
     network, app, peer = tag + '-net', tag + '-app', tag + '-peer'
     subnet = f'10.203.{random.randrange(1, 250)}'
     target = subnet + '.3'
+    # Keep the remote address inside Docker IPAM to avoid bridge isolation, but
+    # outside the app's synthetic /32 tunnel so its ordinary route uses eth0.
+    destination = subnet + '.254'
     try:
         docker('network', 'create', '--internal', '--subnet', subnet + '.0/24', network)
-        docker('run', '-d', '--name', peer, '--network', network, '--ip', target,
-               '--entrypoint', 'python3', args.image, '-u', '-c', SERVER.replace('__TARGET__', target))
+        docker('run', '-d', '--name', peer, '--cap-add', 'NET_ADMIN', '--network', network, '--ip', target,
+               '--entrypoint', 'python3', args.image, '-u', '-c', SERVER.replace('__TARGET__', destination))
+        docker('exec', peer, 'ip', 'address', 'add', destination + '/32', 'dev', 'lo')
         docker('create', '--name', app, '--cap-add', 'NET_ADMIN', '--device-cgroup-rule', 'c 108:* rwm', '--network', 'bridge',
                '--tmpfs', '/run', '--tmpfs', '/tmp',
                '-p', '127.0.0.1::8787', '-p', '127.0.0.1::1080', '-p', '127.0.0.1::8080', args.image)
@@ -158,21 +162,32 @@ def main():
         assert interface not in ('lo', 'ppp0'), route
         docker('exec', app, 'ip', 'link', 'set', interface, 'down')
         docker('exec', app, 'ip', 'link', 'set', interface, 'name', 'ppp0')
+        docker('exec', app, 'ip', 'address', 'del', subnet + '.2/24', 'dev', 'ppp0')
+        docker('exec', app, 'ip', 'address', 'add', subnet + '.2/32', 'dev', 'ppp0')
         docker('exec', app, 'ip', 'link', 'set', 'ppp0', 'up')
-        docker('exec', app, 'ip', 'route', 'replace', 'table', '108', 'default', 'dev', 'ppp0', 'metric', '10')
+        docker('exec', app, 'ip', 'route', 'add', target + '/32', 'dev', 'ppp0', 'src', subnet + '.2')
+        docker('exec', app, 'ip', 'route', 'replace', 'table', '108', 'default', 'via', target, 'dev', 'ppp0', 'onlink', 'metric', '10')
         docker('exec', app, 'sh', '-c', f'printf "nameserver {target}\\noptions timeout:1 attempts:1\\n" > /etc/resolv.conf')
+        ordinary_route = json.loads(docker('exec', app, 'ip', '-j', 'route', 'get', destination))[0]
+        assert ordinary_route['dev'] != 'ppp0', 'Source-address test requires an ordinary default route outside the tunnel'
+        peer_blocked = 'import socket\nfor port in (8787,1080,8080):\n s=socket.socket();s.settimeout(.7)\n assert s.connect_ex(("' + subnet + '.2",port)) != 0, "VPN peer reached local service"\n s.close()'
+        docker('exec', peer, 'python3', '-c', peer_blocked)
+        print('PASS: VPN-side peers cannot reach UI or proxy listeners')
         hostname = 'smoke.fortiproxy.test'
         for kind, fetch in [('HTTP', lambda: http_proxy(ports[8080], hostname)),
                             ('HTTP CONNECT', lambda: http_proxy(ports[8080], hostname, True)),
                             ('SOCKS5', lambda: socks_proxy(ports[1080], hostname))]:
-            assert MARKER in fetch(), kind + ' did not reach isolated peer through ppp0'
-            print('PASS: ' + kind + ' through synthetic tunnel interface')
+            response = fetch()
+            assert MARKER in response, kind + ' did not reach isolated peer outside the ordinary tunnel route through ppp0'
+            assert response.endswith(b'source=' + (subnet + '.2').encode()), kind + ' did not use the tunnel source address'
+            print('PASS: ' + kind + ' through policy route using tunnel source address')
         dns_probe = 'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(2); s.sendto(b"probe",("' + target + '",53)); assert s.recv(100)==b"dns-probe"'
         docker('exec', '-u', '10001', app, 'python3', '-c', dns_probe)
         print('PASS: proxy UID DNS traffic through synthetic tunnel interface')
         docker('exec', app, 'ip', 'link', 'set', 'ppp0', 'down')
         docker('exec', app, 'ip', 'link', 'set', 'ppp0', 'name', interface)
         docker('exec', app, 'ip', 'link', 'set', interface, 'up')
+        docker('exec', app, 'ip', 'route', 'replace', target + '/32', 'dev', interface, 'src', subnet + '.2')
         direct = 'import urllib.request; assert b"fortiproxy-isolated-smoke" in urllib.request.urlopen("http://' + target + ':8000",timeout=3).read()'
         docker('exec', app, 'python3', '-c', direct)
         for kind, fetch in [('HTTP', lambda: http_proxy(ports[8080], target)),
@@ -188,6 +203,9 @@ def main():
                                      capture_output=True, text=True, timeout=10)
         assert dns_blocked.returncode != 0, 'Proxy UID DNS traffic leaked through fallback interface'
         print('PASS: proxy UID DNS egress blocked without tunnel')
+        local_probe = 'import socket\ns=socket.socket();s.settimeout(1);assert s.connect_ex(("127.0.0.1",8787)) != 0, "Proxy UID reached local UI"\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(1)\ntry:\n s.sendto(b"\\x12\\x34\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x09localhost\\x00\\x00\\x01\\x00\\x01",("127.0.0.11",53))\n s.recv(100); raise AssertionError("Proxy UID reached Docker DNS")\nexcept OSError: pass'
+        docker('exec', '-u', '10001', app, 'python3', '-c', local_probe)
+        print('PASS: proxy UID cannot reach local UI or Docker DNS without tunnel')
         assert api(ports[8787], 'POST', '/api/disconnect', {})[0] == 200
         print('PASS: final disconnect remains available')
         print('All isolated checks passed. FortiGate authentication/TLS/PPP handshake was not tested.')
