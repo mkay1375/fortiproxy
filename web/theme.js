@@ -13,7 +13,6 @@
     const theme = preference === 'system' ? (media.matches ? 'dark' : 'light') : preference;
     document.documentElement.dataset.theme = theme;
     document.documentElement.dataset.themePreference = preference;
-    document.documentElement.style.colorScheme = theme;
     const select = document.querySelector('#theme-select');
     if (select) select.value = preference;
   }
