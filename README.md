@@ -17,6 +17,10 @@ conflicting with services commonly using `8080`. Enter your gateway address, cus
 and password, then select **Connect**. **Disconnect** stops the tunnel and blocks
 proxy egress. Restarting the container does not reconnect automatically.
 
+Use **Test gateway** to check whether the gateway host and port accept a TCP
+connection from the container. This test has a five-second deadline and does not
+send credentials or validate TLS certificates or VPN login.
+
 The supported connection type is **SSL VPN**, with password authentication,
 optional realm, optional one-time code, no client certificate, and an optional
 SHA-256 certificate fingerprint. A custom port such as `10443` is supported.
@@ -45,9 +49,16 @@ TCP traffic; they do not provide a general UDP tunnel.
 
 ## Credentials and certificates
 
-The UI does not save profiles, passwords or one-time codes. The backend writes
-a private mode-0600 openfortivpn configuration under `/run`, which is a tmpfs in
-Compose. The file is removed once connected, on failure or on disconnect.
+Connection settings save automatically as you edit and are restored when you open
+the UI. The saved fields are connection name, gateway, port, username, realm and
+trusted certificate fingerprint. Passwords and one-time codes are never included
+in the saved profile. The mode-0600 `/data/profile.json` file lives in the Compose
+`profile-data` named volume and survives container restarts and recreation.
+`docker compose down` retains it; `docker compose down -v` deletes it. Local
+Python previews use `data/profile.json` (or `FORTIPROXY_DATA`), excluded from Git.
+
+For each connection, the backend writes a private mode-0600 openfortivpn
+configuration under `/run`, which is a tmpfs in Compose. The file is removed once connected, on failure or on disconnect.
 Credentials remain in process memory while needed; they are not logged or sent
 back through the status API. Re-enter credentials for the next connection.
 

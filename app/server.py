@@ -9,7 +9,9 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import threading
+import tempfile
 import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -17,10 +19,13 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def validate_config(data):
+PROFILE_FIELDS = ('name', 'host', 'port', 'username', 'realm', 'trusted_cert')
+
+
+def validate_config(data, *, profile=False):
     if not isinstance(data, dict):
         raise ValueError('Enter a connection configuration.')
-    allowed = {'name', 'host', 'port', 'username', 'password', 'realm', 'trusted_cert', 'otp'}
+    allowed = set(PROFILE_FIELDS) if profile else set(PROFILE_FIELDS) | {'password', 'otp'}
     if set(data) - allowed:
         raise ValueError('Unknown connection field.')
     result = {}
@@ -31,13 +36,13 @@ def validate_config(data):
         if value != value.strip():
             raise ValueError(f'Remove leading or trailing spaces from {key.replace("_", " ")}.')
         result[key] = value
-    if not result['host'] or not result['username'] or not result['password']:
+    if not profile and (not result['host'] or not result['username'] or not result['password']):
         raise ValueError('Gateway, username and password are required.')
     host = result['host']
     try:
         ipaddress.IPv4Address(host)
     except ValueError:
-        if len(host) > 253 or not all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', x) for x in host.split('.')):
+        if host and (len(host) > 253 or not all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', x) for x in host.split('.'))):
             raise ValueError('Enter an IPv4 address or hostname without a URL or port.')
     port = data.get('port', 443)
     if isinstance(port, bool) or not isinstance(port, (int, str)) or not str(port).isdigit() or not 1 <= int(port) <= 65535:
@@ -46,6 +51,64 @@ def validate_config(data):
     if result['trusted_cert'] and not re.fullmatch('[a-fA-F0-9]{64}', result['trusted_cert']):
         raise ValueError('Trusted certificate must be a 64-character SHA-256 fingerprint.')
     return result
+
+
+def test_gateway(data):
+    if not isinstance(data, dict) or set(data) - {'host', 'port'}:
+        raise ValueError('Enter only the gateway and port for this test.')
+    config = validate_config(data, profile=True)
+    if not config['host']:
+        raise ValueError('Enter a gateway address to test.')
+    # A separate process bounds hostname resolution as well as TCP connect time.
+    # This checks TCP reachability only; it never sends VPN login credentials.
+    try:
+        result = subprocess.run(
+            [sys.executable, '-c',
+             'import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=4).close()',
+             config['host'], str(config['port'])],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        reachable = result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        reachable = False
+    return {'reachable': reachable, 'message':
+            'Gateway TCP port is reachable. VPN login and TLS were not tested.' if reachable else
+            'Gateway TCP port could not be reached. Check the address, port and network access.'}
+
+
+class ProfileStore:
+    """One persistent, validated profile containing only non-secret fields."""
+    def __init__(self, directory):
+        self.directory = Path(directory)
+        self.path = self.directory / 'profile.json'
+        self.lock = threading.Lock()
+
+    def load(self):
+        with self.lock:
+            try:
+                data = self.path.read_text()
+            except FileNotFoundError:
+                return {}
+            return validate_config(json.loads(data), profile=True)
+
+    def save(self, data):
+        # Reject secret/unknown keys rather than silently accepting them.
+        profile = validate_config(data, profile=True)
+        with self.lock:
+            self.directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+            self.directory.chmod(0o700)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', dir=self.directory,
+                                                 prefix='.profile-', delete=False) as output:
+                    temporary = Path(output.name)
+                    json.dump(profile, output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        return profile
 
 
 class VPNManager:
@@ -189,6 +252,7 @@ class VPNManager:
 
 
 manager = VPNManager(os.environ.get('FORTIPROXY_RUNTIME', '/run/fortiproxy'))
+profiles = ProfileStore(os.environ.get('FORTIPROXY_DATA', str(ROOT / 'data')))
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -230,6 +294,11 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if not self._local_host():
             return self._json(403, {'error': 'Use the localhost address to open Fortiproxy.'})
+        if self.path == '/api/profile':
+            try:
+                return self._json(200, profiles.load())
+            except (OSError, ValueError):
+                return self._json(503, {'error': 'Unable to read saved settings. Check the profile data volume.'})
         if self.path == '/api/status':
             return self._json(200, manager.status())
         if self.path.startswith('/api/'):
@@ -251,6 +320,10 @@ class Handler(SimpleHTTPRequestHandler):
             if not 0 < length <= 8192:
                 raise ValueError('Request body is too large or empty.')
             data = json.loads(self.rfile.read(length))
+            if self.path == '/api/test-gateway':
+                return self._json(200, test_gateway(data))
+            if self.path == '/api/profile':
+                return self._json(200, profiles.save(data))
             if self.path == '/api/connect':
                 return self._json(202, manager.connect(data))
             if self.path == '/api/disconnect':
@@ -258,6 +331,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(404, {'error': 'Unknown endpoint.'})
         except (ValueError, json.JSONDecodeError) as error:
             return self._json(400, {'error': str(error)})
+        except OSError:
+            return self._json(503, {'error': 'Unable to save settings. Check the profile data volume.'})
         except RuntimeError as error:
             return self._json(409, {'error': str(error)})
 

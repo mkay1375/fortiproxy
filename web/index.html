@@ -28,11 +28,13 @@
               <div><label for="host">Remote gateway</label><input id="host" name="host" required maxlength="253" placeholder="vpn.example.com" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
               <div><label for="port">Port</label><input id="port" name="port" type="number" min="1" max="65535" value="10443" required inputmode="numeric"></div>
             </div>
+            <button id="test-gateway" class="copy-button" type="button">Test gateway</button>
+            <p id="gateway-test-message" class="field-note" role="status"></p>
             <label for="username">Username</label>
             <input id="username" name="username" required maxlength="255" placeholder="Your VPN username" autocomplete="username" autocapitalize="none" spellcheck="false">
             <label for="password">Password</label>
             <div class="password-field"><input id="password" name="password" type="password" required maxlength="255" autocomplete="current-password"><button id="toggle-password" type="button" aria-label="Show password" aria-pressed="false">Show</button></div>
-            <p class="field-note">Credentials are used for this connection only and are never saved.</p>
+            <p class="field-note">Password and one-time code are used for this connection only and are never saved.</p>
             <details>
               <summary>Additional settings</summary>
               <div class="additional-fields">
@@ -43,6 +45,7 @@
               </div>
             </details>
           </fieldset>
+          <p id="profile-message" class="field-note" role="status">Loading saved settings…</p>
           <div id="form-error" class="form-error" role="alert" hidden></div>
           <button id="connect-button" class="primary-button" type="submit" disabled><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v8m-5.5-5.2a8 8 0 1 0 11 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>Connect VPN</span></button>
         </form>

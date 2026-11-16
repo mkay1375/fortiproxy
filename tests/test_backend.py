@@ -3,12 +3,13 @@ import http.client
 import os
 from pathlib import Path
 import subprocess
+import socketserver
 import tempfile
 import threading
 import time
 import unittest
 from unittest.mock import patch
-from app.server import Handler, ThreadingHTTPServer, VPNManager, validate_config
+from app.server import Handler, ThreadingHTTPServer, VPNManager, ProfileStore, test_gateway, validate_config
 
 
 CONFIG = {'host': 'vpn.example.test', 'port': 10443, 'username': 'test-user', 'password': 'test-password'}
@@ -33,6 +34,69 @@ class ValidationTests(unittest.TestCase):
                 validate_config({**CONFIG, 'port': value})
         with self.assertRaises(ValueError):
             validate_config({**CONFIG, 'insecure-ssl': True})
+
+
+class GatewayTests(unittest.TestCase):
+    def test_reachable_and_closed_local_tcp_port_without_vpn_login(self):
+        class TCP(socketserver.BaseRequestHandler):
+            def handle(self):
+                pass
+        server = socketserver.TCPServer(('127.0.0.1', 0), TCP)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(test_gateway({'host': '127.0.0.1', 'port': port})['reachable'])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        self.assertFalse(test_gateway({'host': '127.0.0.1', 'port': port})['reachable'])
+
+    def test_timeout_is_bounded_and_secret_fields_are_rejected(self):
+        with patch('app.server.subprocess.run', side_effect=subprocess.TimeoutExpired('tcp-test', 5)) as run:
+            self.assertFalse(test_gateway({'host': 'vpn.example.test', 'port': 10443})['reachable'])
+            self.assertEqual(run.call_args.kwargs['timeout'], 5)
+        with patch('app.server.subprocess.run') as run:
+            for data in [{'host': ''}, {'host': 'bad\nhost'}, {'host': 'vpn.example.test', 'password': 'secret'}]:
+                with self.subTest(data=data), self.assertRaises(ValueError):
+                    test_gateway(data)
+            run.assert_not_called()
+
+
+class ProfileTests(unittest.TestCase):
+    def test_disk_round_trip_and_private_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(Path(directory) / 'data')
+            self.assertEqual(store.load(), {})
+            profile = {k: v for k, v in CONFIG.items() if k != 'password'}
+            profile.update(name='Office', realm='staff', trusted_cert='a' * 64)
+            saved = store.save(profile)
+            self.assertEqual(ProfileStore(store.directory).load(), saved)
+            self.assertNotIn('password', store.path.read_text())
+            self.assertNotIn('otp', store.path.read_text())
+            self.assertEqual(store.path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(store.directory.stat().st_mode & 0o777, 0o700)
+
+    def test_secrets_and_invalid_updates_cannot_replace_saved_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(directory)
+            original = store.save({'host': 'vpn.example.test', 'port': 10443})
+            for extra in [{'password': 'never-store-this'}, {'otp': '654321'}, {'host': 'bad\nhost'}]:
+                with self.subTest(extra=extra), self.assertRaises(ValueError):
+                    store.save({**original, **extra})
+                self.assertEqual(store.load(), original)
+            self.assertEqual(list(Path(directory).glob('.profile-*')), [])
+
+    def test_atomic_write_failure_preserves_previous_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(directory)
+            original = store.save({'name': 'Original'})
+            with patch('app.server.os.replace', side_effect=OSError('disk failure')):
+                with self.assertRaises(OSError):
+                    store.save({'name': 'Replacement'})
+            self.assertEqual(store.load(), original)
+            self.assertEqual(list(Path(directory).glob('.profile-*')), [])
 
 
 class FakeProcess:
@@ -142,6 +206,9 @@ class LifecycleTests(unittest.TestCase):
 
 class HTTPBoundaryTests(unittest.TestCase):
     def setUp(self):
+        self.profile_directory = tempfile.TemporaryDirectory()
+        self.profile_patch = patch('app.server.profiles', ProfileStore(self.profile_directory.name))
+        self.profile_patch.start()
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -151,6 +218,8 @@ class HTTPBoundaryTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
+        self.profile_patch.stop()
+        self.profile_directory.cleanup()
 
     def request(self, method, path, body=None, headers=None):
         connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
@@ -177,6 +246,33 @@ class HTTPBoundaryTests(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/disconnect', '{}', headers)[0], 403)
         headers['Origin'] = f'http://127.0.0.1:{self.port}'
         self.assertEqual(self.request('POST', '/api/disconnect', '{}', headers)[0], 200)
+
+    def test_profile_api_restores_settings_and_rejects_secrets_and_foreign_requests(self):
+        headers = {'Content-Type': 'application/json', 'X-Fortiproxy-Request': '1'}
+        profile = {'name': 'Office', 'host': 'vpn.example.test', 'port': 10443, 'username': 'test-user'}
+        self.assertEqual(self.request('GET', '/api/profile'), (200, b'{}'))
+        self.assertEqual(self.request('POST', '/api/profile', json.dumps(profile), headers)[0], 200)
+        for secret in ['password', 'otp']:
+            self.assertEqual(self.request('POST', '/api/profile', json.dumps({**profile, secret: 'secret'}), headers)[0], 400)
+        code, body = self.request('GET', '/api/profile')
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)['host'], profile['host'])
+        self.assertNotIn('password', json.loads(body))
+        self.assertNotIn('otp', json.loads(body))
+        headers['Origin'] = 'https://foreign.invalid'
+        self.assertEqual(self.request('POST', '/api/profile', json.dumps(profile), headers)[0], 403)
+
+    def test_gateway_api_checks_request_boundaries(self):
+        headers = {'Content-Type': 'application/json', 'X-Fortiproxy-Request': '1'}
+        data = json.dumps({'host': 'vpn.example.test', 'port': 10443})
+        with patch('app.server.test_gateway', return_value={'reachable': True, 'message': 'TCP port reachable'}) as check:
+            status, body = self.request('POST', '/api/test-gateway', data, headers)
+            self.assertEqual(status, 200)
+            self.assertTrue(json.loads(body)['reachable'])
+            check.assert_called_once_with({'host': 'vpn.example.test', 'port': 10443})
+            headers['Origin'] = 'https://foreign.invalid'
+            self.assertEqual(self.request('POST', '/api/test-gateway', data, headers)[0], 403)
+            self.assertEqual(check.call_count, 1)
 
     def test_unknown_fields_and_large_bodies_rejected_without_connecting(self):
         headers = {'Content-Type': 'application/json', 'X-Fortiproxy-Request': '1'}

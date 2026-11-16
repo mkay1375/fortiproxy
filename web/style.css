@@ -612,3 +612,12 @@ footer {
         transition:none!important;
     }
 }
+
+#gateway-test-message[data-result="success"] { color: var(--green); }
+#gateway-test-message[data-result="error"] { color: var(--red); }
+#test-gateway {
+    margin-top: 8px;
+    min-height: 34px;
+    padding: 6px 12px;
+    font-size: 12px;
+}

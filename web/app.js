@@ -14,6 +14,16 @@ const statusMessage = document.querySelector('#status-message');
 const tunnel = document.querySelector('#tunnel');
 const connectionTime = document.querySelector('#connection-time');
 const availability = document.querySelector('#proxy-availability');
+const gatewayButton = document.querySelector('#test-gateway');
+const gatewayMessage = document.querySelector('#gateway-test-message');
+let testingGateway = false;
+let gatewayVersion = 0;
+const profileMessage = document.querySelector('#profile-message');
+const profileFields = ['name', 'host', 'port', 'username', 'realm', 'trusted_cert'];
+let profileReady = false;
+let saveTimer;
+let saveQueue = Promise.resolve();
+let saveVersion = 0;
 let status = null;
 let reachable = false;
 let submitting = false;
@@ -41,13 +51,14 @@ function render() {
   statusLabel.textContent = description ? description[0] : 'Unavailable';
   statusTitle.textContent = description ? description[1] : 'Connection manager unavailable';
   statusMessage.textContent = description ? (status.message || description[2]) : 'Cannot read the VPN status. Check that the container is running; this page will retry automatically.';
-  fields.disabled = submitting || active || !reachable;
-  connectButton.disabled = submitting || active || !reachable;
+  fields.disabled = submitting || active || !reachable || !profileReady;
+  connectButton.disabled = submitting || active || !reachable || !profileReady;
   connectButton.querySelector('span').textContent = submitting ? 'Please wait…' : state === 'connecting' ? 'Connecting…' : state === 'connected' ? 'VPN connected' : state === 'disconnecting' ? 'Disconnecting…' : 'Connect VPN';
   disconnectButton.hidden = !active;
   disconnectButton.disabled = submitting || !reachable || state === 'disconnecting';
   disconnectButton.textContent = state === 'disconnecting' ? 'Disconnecting…' : 'Disconnect VPN';
   availability.textContent = state === 'connected' ? 'Ready to use' : state === 'unknown' ? 'Status unavailable' : 'Waiting for VPN';
+  gatewayButton.disabled = testingGateway || submitting || active || !reachable || !profileReady;
   updateTime();
 }
 
@@ -80,6 +91,53 @@ async function request(path, data) {
   }
 }
 
+function saveProfile() {
+  clearTimeout(saveTimer);
+  const data = {};
+  for (const key of profileFields) {
+    const value = form.elements.namedItem(key).value;
+    data[key] = key === 'port' ? Number(value) : value.trim();
+  }
+  const version = ++saveVersion;
+  profileMessage.textContent = 'Saving settings…';
+  // Serialize writes so a slower older request cannot replace newer settings.
+  const pending = saveQueue.then(() => request('/api/profile', data));
+  saveQueue = pending.catch(() => {});
+  return pending.then(() => {
+    if (version === saveVersion) profileMessage.textContent = 'Settings saved on disk. Changes save automatically.';
+  }, error => {
+    if (version === saveVersion) profileMessage.textContent = `Settings not saved: ${error.message}`;
+    throw error;
+  });
+}
+
+for (const key of profileFields) {
+  const input = form.elements.namedItem(key);
+  input.addEventListener('input', () => {
+    if (!profileReady) return;
+    clearTimeout(saveTimer);
+    profileMessage.textContent = 'Unsaved changes…';
+    saveTimer = setTimeout(() => { void saveProfile().catch(() => {}); }, 400);
+  });
+  input.addEventListener('change', () => {
+    if (profileReady) void saveProfile().catch(() => {});
+  });
+}
+
+async function restoreProfile() {
+  try {
+    const profile = await request('/api/profile');
+    for (const key of profileFields) {
+      if (Object.hasOwn(profile, key)) form.elements.namedItem(key).value = profile[key];
+    }
+    profileReady = true;
+    profileMessage.textContent = Object.keys(profile).length ? 'Saved settings restored. Changes save automatically.' : 'Connection settings save automatically on disk.';
+  } catch {
+    profileMessage.textContent = 'Cannot load saved settings. Reload this page to retry.';
+  }
+  render();
+}
+
 async function refresh() {
   if (submitting) return;
   const version = ++refreshVersion;
@@ -96,6 +154,37 @@ async function refresh() {
   if (!submitting) render();
 }
 
+gatewayButton.addEventListener('click', async () => {
+  const host = form.elements.namedItem('host');
+  const port = form.elements.namedItem('port');
+  if (!host.reportValidity() || !port.reportValidity() || testingGateway) return;
+  testingGateway = true;
+  const version = ++gatewayVersion;
+  gatewayMessage.textContent = 'Testing gateway TCP port…';
+  gatewayMessage.dataset.result = '';
+  render();
+  try {
+    const result = await request('/api/test-gateway', {host: host.value.trim(), port: Number(port.value)});
+    if (version !== gatewayVersion) return;
+    gatewayMessage.textContent = result.message;
+    gatewayMessage.dataset.result = result.reachable ? 'success' : 'error';
+  } catch (error) {
+    if (version !== gatewayVersion) return;
+    gatewayMessage.textContent = error.name === 'AbortError' ? 'Gateway test timed out. Try again.' : error.message;
+    gatewayMessage.dataset.result = 'error';
+  } finally {
+    testingGateway = false;
+    render();
+  }
+});
+for (const key of ['host', 'port']) {
+  form.elements.namedItem(key).addEventListener('input', () => {
+    gatewayVersion += 1;
+    gatewayMessage.textContent = '';
+    gatewayMessage.dataset.result = '';
+  });
+}
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (submitting || !reachable || !form.reportValidity()) return;
@@ -107,6 +196,7 @@ form.addEventListener('submit', async (event) => {
   showError('');
   render();
   try {
+    await saveProfile();
     await request('/api/connect', data);
     password.value = '';
     otp.value = '';
@@ -168,5 +258,5 @@ async function poll() {
   await refresh();
   setTimeout(poll, 2000);
 }
-void poll();
+void restoreProfile().then(poll);
 setInterval(updateTime, 1000);

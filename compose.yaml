@@ -3,6 +3,10 @@ services:
     build: .
     image: fortiproxy:local
     init: false
+    environment:
+      FORTIPROXY_DATA: /data
+    volumes:
+      - profile-data:/data
     cap_add:
       - NET_ADMIN
     device_cgroup_rules:
@@ -18,3 +22,6 @@ services:
     stop_grace_period: 15s
     pids_limit: 128
     mem_limit: 256m
+
+volumes:
+  profile-data:
