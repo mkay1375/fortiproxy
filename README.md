@@ -50,8 +50,8 @@ TCP traffic; they do not provide a general UDP tunnel.
 ## Credentials and certificates
 
 Connection settings save automatically as you edit and are restored when you open
-the UI. The saved fields are connection name, gateway, port, username, realm and
-trusted certificate fingerprint. Passwords and one-time codes are never included
+the UI. The saved fields are connection name, gateway, port, username, realm,
+certificate settings and the one-time code format. Passwords and one-time codes are never included
 in the saved profile. The mode-0600 `/data/profile.json` file lives in the Compose
 `profile-data` named volume and survives container restarts and recreation.
 `docker compose down` retains it; `docker compose down -v` deletes it. Local
@@ -62,12 +62,26 @@ configuration under `/run`, which is a tmpfs in Compose. The file is removed onc
 Credentials remain in process memory while needed; they are not logged or sent
 back through the status API. Re-enter credentials for the next connection.
 
-TLS certificate validation stays enabled. If your gateway uses a private CA,
-enter its SHA-256 certificate fingerprint only after verifying it through a
-trusted administrator or another independent channel. The panel does not offer
-an insecure certificate bypass. Leading or trailing spaces and control
-characters are rejected because openfortivpn's configuration parser would
-otherwise alter them.
+The one-time code field sits beside Password. By default it is appended directly
+to the password, with no separator. Additional settings also offers a separate
+gateway challenge mode. Neither the password, the code nor the combined value
+is included in the saved profile.
+
+Certificate validation is enabled by default. Additional settings includes
+**Ignore certificate validation**, which accepts the certificate currently
+presented by the gateway without checking its identity. Encryption and TLS 1.2+
+stay enabled. This option is saved only when you select it; it is not enabled
+automatically. The backend obtains a fresh certificate digest for that attempt
+without sending credentials, then supplies it to openfortivpn. The observed
+digest is not persisted or added to macOS trust settings. Certificates changing
+between that probe and VPN negotiation may still cause the connection to fail.
+This is distinct from openfortivpn's `--insecure-ssl`, which relaxes protocol and
+cipher restrictions and is not used here.
+
+With validation enabled, normal CA/hostname checks apply, or you can enter a
+SHA-256 certificate fingerprint verified with your administrator. Leading or
+trailing spaces and control characters are rejected because openfortivpn's
+configuration parser would otherwise alter them.
 
 ## Isolation
 

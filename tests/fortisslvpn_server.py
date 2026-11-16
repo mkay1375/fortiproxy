@@ -115,7 +115,8 @@ class Handler(socketserver.BaseRequestHandler):
                         body += piece
                     if path == '/remote/logincheck':
                         fields = urllib.parse.parse_qs(body.decode())
-                        valid = fields.get('username') == ['test-user'] and fields.get('credential') == ['test-password']
+                        valid = ((fields.get('username') == ['test-user'] and fields.get('credential') == ['test-password'])
+                                 or (fields.get('username') == ['test-user-otp'] and fields.get('credential') == ['test-password123456']))
                         self.respond(b'ret=1' if valid else b'ret=0', cookie=valid)
                         print('LOGIN accepted' if valid else 'LOGIN rejected', flush=True)
                     elif path == '/remote/logout':

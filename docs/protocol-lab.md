@@ -50,6 +50,8 @@ never mounted or modified by this harness.
 - Gateway TCP reachability and a closed port.
 - Untrusted certificate rejection before login.
 - Wrong password rejection and safe diagnostic messages.
+- Explicit certificate-validation opt-out and appended password+OTP login,
+  including a real browser session with both secret inputs cleared.
 - Verified certificate pin and successful password/cookie login.
 - Actual pppd LCP/IPCP negotiation and `ppp0` link type `ppp`.
 - Client completion evidence as well as an assigned PPP interface before Connected.

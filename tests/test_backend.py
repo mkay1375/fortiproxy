@@ -10,7 +10,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from app.server import Handler, ThreadingHTTPServer, VPNManager, ProfileStore, VPNDiagnostics, test_gateway, validate_config
+from app.server import Handler, ThreadingHTTPServer, VPNManager, ProfileStore, VPNDiagnostics, gateway_fingerprint, test_gateway, validate_config
 
 
 CONFIG = {'host': 'vpn.example.test', 'port': 10443, 'username': 'test-user', 'password': 'test-password'}
@@ -29,12 +29,41 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 validate_config({**CONFIG, key: value})
 
+    def test_certificate_option_types_and_concatenated_credential_limits(self):
+        self.assertFalse(validate_config(CONFIG)['ignore_cert'])
+        self.assertEqual(validate_config(CONFIG)['otp_mode'], 'append')
+        for change in [{'ignore_cert': 'true'}, {'ignore_cert': 1}, {'otp_mode': 'unknown'},
+                       {'password': 'p' * 255, 'otp': '12'},
+                       {'password': 'é' * 128, 'otp': '1'},
+                       {'otp_mode': 'separate', 'otp': '1' * 65}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                validate_config({**CONFIG, **change})
+
     def test_rejects_bad_ports_and_unknown_options(self):
         for value in [True, 0, 65536, 'abc', 1.5]:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_config({**CONFIG, 'port': value})
         with self.assertRaises(ValueError):
             validate_config({**CONFIG, 'insecure-ssl': True})
+
+
+class FingerprintTests(unittest.TestCase):
+    def test_probe_returns_only_a_digest_with_a_deadline_and_no_login(self):
+        result = subprocess.CompletedProcess([], 0, 'a' * 64 + '\n')
+        with patch('app.server.subprocess.run', return_value=result) as run:
+            self.assertEqual(gateway_fingerprint('vpn.example.test', 10443), 'a' * 64)
+            self.assertEqual(run.call_args.kwargs['timeout'], 8)
+            self.assertEqual(run.call_args.args[0][-2:], ['vpn.example.test', '10443'])
+            self.assertNotIn('test-password', str(run.call_args))
+
+    def test_probe_rejects_untrusted_output_and_timeout_without_exposing_it(self):
+        with patch('app.server.subprocess.run', return_value=subprocess.CompletedProcess([], 0, 'private-server-text')):
+            with self.assertRaises(RuntimeError) as result:
+                gateway_fingerprint('vpn.example.test', 443)
+            self.assertNotIn('private-server-text', str(result.exception))
+        with patch('app.server.subprocess.run', side_effect=subprocess.TimeoutExpired('probe', 8)):
+            with self.assertRaisesRegex(RuntimeError, 'timed out'):
+                gateway_fingerprint('vpn.example.test', 443)
 
 
 class DiagnosticTests(unittest.TestCase):
@@ -104,11 +133,11 @@ class ProfileTests(unittest.TestCase):
             store = ProfileStore(Path(directory) / 'data')
             self.assertEqual(store.load(), {})
             profile = {k: v for k, v in CONFIG.items() if k != 'password'}
-            profile.update(name='Office', realm='staff', trusted_cert='a' * 64)
+            profile.update(name='Office', realm='staff', trusted_cert='a' * 64, ignore_cert=True, otp_mode='separate')
             saved = store.save(profile)
             self.assertEqual(ProfileStore(store.directory).load(), saved)
             self.assertNotIn('password', store.path.read_text())
-            self.assertNotIn('otp', store.path.read_text())
+            self.assertNotIn('otp', json.loads(store.path.read_text()))
             self.assertEqual(store.path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(store.directory.stat().st_mode & 0o777, 0o700)
 
@@ -169,6 +198,59 @@ class LifecycleTests(unittest.TestCase):
     def tearDown(self):
         self.manager.disconnect()
         self.temp.cleanup()
+
+    def test_appended_otp_is_only_in_temporary_password_and_not_a_challenge(self):
+        self.manager.connect({**CONFIG, 'password': 'base-password', 'otp': '123456'})
+        eventually(lambda: bool(self.spawned))
+        text = self.spawned[0][0]
+        self.assertIn('password = base-password123456\n', text)
+        self.assertNotIn('\notp = ', '\n' + text)
+        self.assertNotIn('otp-mode', text)
+        self.assertNotIn('ignore-cert', text)
+        self.assertNotIn('base-password123456', json.dumps(self.manager.status()))
+
+    def test_separate_challenge_mode_preserves_client_otp_option(self):
+        self.manager.connect({**CONFIG, 'otp': '123456', 'otp_mode': 'separate'})
+        eventually(lambda: bool(self.spawned))
+        self.assertIn('password = test-password\n', self.spawned[0][0])
+        self.assertIn('otp = 123456\n', self.spawned[0][0])
+
+    def test_ignore_certificate_accepts_only_the_observed_attempt_digest(self):
+        calls = []
+        def fingerprint(host, port):
+            calls.append((host, port))
+            return 'b' * 64
+        self.manager.certificate_fetch = fingerprint
+        self.manager.connect({**CONFIG, 'ignore_cert': True, 'trusted_cert': 'a' * 64})
+        eventually(lambda: bool(self.spawned))
+        self.assertEqual(calls, [(CONFIG['host'], CONFIG['port'])])
+        self.assertIn('trusted-cert = ' + 'b' * 64, self.spawned[0][0])
+        self.assertNotIn('a' * 64, self.spawned[0][0])
+        self.assertNotIn('insecure-ssl', self.spawned[0][0])
+
+    def test_default_certificate_validation_does_not_probe_or_override_pin(self):
+        self.manager.certificate_fetch = lambda *_: self.fail('Certificate probe ran without opt-in')
+        self.manager.connect({**CONFIG, 'trusted_cert': 'a' * 64})
+        eventually(lambda: bool(self.spawned))
+        self.assertIn('trusted-cert = ' + 'a' * 64, self.spawned[0][0])
+
+    def test_disconnect_during_certificate_probe_cannot_start_vpn(self):
+        entered, release = threading.Event(), threading.Event()
+        def fingerprint(*_):
+            entered.set()
+            release.wait(2)
+            return 'b' * 64
+        self.manager.certificate_fetch = fingerprint
+        self.manager.connect({**CONFIG, 'ignore_cert': True})
+        self.assertTrue(entered.wait(1))
+        thread = threading.Thread(target=self.manager.disconnect)
+        thread.start()
+        eventually(lambda: self.manager.status()['state'] == 'disconnecting')
+        release.set()
+        thread.join(3)
+        self.assertEqual(self.manager.status()['state'], 'disconnected')
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(list(Path(self.temp.name).glob('connection-*')), [])
 
     def test_disconnect_cleans_secret_and_stops_process(self):
         self.manager.connect(CONFIG)

@@ -121,6 +121,12 @@ with socket.create_connection(('127.0.0.1',8080),timeout=4) as connection:
         api('/api/connect', {**config, 'password': 'wrong-dummy-password'})
         assert 'login was rejected' in wait_state('error')['message']
         print('PASS: wrong password rejected and surfaced safely', flush=True)
+        api('/api/connect', {**config, 'username': 'test-user-otp', 'otp': '123456',
+                             'ignore_cert': True, 'trusted_cert': ''})
+        wait_state('connected')
+        proxy_checks(certificate)
+        assert api('/api/disconnect', {})['state'] == 'disconnected'
+        print('PASS: explicit certificate-validation opt-out and password+OTP login through real TLS/PPP', flush=True)
         api('/api/connect', config)
         wait_state('connected')
         links = json.loads(docker('exec', client, 'ip', '-j', 'link', 'show', 'dev', 'ppp0'))

@@ -147,7 +147,7 @@ fieldset>label:first-of-type {
     font-size:11px;
     margin-left:5px;
 }
-input {
+input,select {
     width:100%;
     height:43px;
     padding:0 12px;
@@ -165,7 +165,7 @@ input::placeholder {
 input:hover {
     border-color:#98acc8;
 }
-input:focus {
+input:focus,select:focus {
     outline:2px solid #2457cc33;
     outline-offset:1px;
     border-color:var(--blue);
@@ -174,7 +174,7 @@ button:focus-visible,summary:focus-visible,a:focus-visible {
     outline:3px solid #7b9ff1;
     outline-offset:3px;
 }
-input:disabled {
+input:disabled,select:disabled {
     background:#f7f9fc;
     color:#66758b;
 }
@@ -621,3 +621,25 @@ footer {
     padding: 6px 12px;
     font-size: 12px;
 }
+
+.credentials-row {
+    display: grid;
+    align-items: end;
+    grid-template-columns: minmax(0, 1fr) minmax(110px, .52fr);
+    gap: 12px;
+}
+.additional-fields .certificate-option {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    cursor: pointer;
+}
+.certificate-option input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    padding: 0;
+    flex: none;
+    accent-color: var(--blue);
+}
+#certificate-warning { color: var(--red); }

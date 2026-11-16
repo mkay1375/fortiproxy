@@ -32,16 +32,21 @@
             <p id="gateway-test-message" class="field-note" role="status"></p>
             <label for="username">Username</label>
             <input id="username" name="username" required maxlength="255" placeholder="Your VPN username" autocomplete="username" autocapitalize="none" spellcheck="false">
-            <label for="password">Password</label>
-            <div class="password-field"><input id="password" name="password" type="password" required maxlength="255" autocomplete="current-password"><button id="toggle-password" type="button" aria-label="Show password" aria-pressed="false">Show</button></div>
+            <div class="credentials-row">
+              <div><label for="password">Password</label><div class="password-field"><input id="password" name="password" type="password" required maxlength="255" autocomplete="current-password"><button id="toggle-password" type="button" aria-label="Show password" aria-pressed="false">Show</button></div></div>
+              <div><label for="otp">One-time code <span class="optional">optional</span></label><input id="otp" name="otp" maxlength="128" autocomplete="one-time-code" type="password" inputmode="numeric" placeholder="Code"></div>
+            </div>
+            <p id="otp-note" class="field-note">The code is appended directly to your password, with no separator.</p>
             <p class="field-note">Password and one-time code are used for this connection only and are never saved.</p>
             <details>
               <summary>Additional settings</summary>
               <div class="additional-fields">
                 <label for="realm">Realm <span class="optional">optional</span></label><input id="realm" name="realm" maxlength="255" autocomplete="off" placeholder="Leave empty unless required">
-                <label for="otp">One-time code <span class="optional">optional</span></label><input id="otp" name="otp" maxlength="128" autocomplete="one-time-code" type="password" placeholder="If your VPN requires a code">
+                <label for="otp_mode">Code format</label><select id="otp_mode" name="otp_mode"><option value="append">Append to password</option><option value="separate">Separate gateway challenge</option></select>
+                <label class="certificate-option" for="ignore_cert"><input id="ignore_cert" name="ignore_cert" type="checkbox"><span>Ignore certificate validation</span></label>
+                <p id="certificate-warning" class="field-note" hidden>Encryption stays on, but the gateway’s identity is not verified.</p>
                 <label for="trusted_cert">Trusted certificate fingerprint <span class="optional">optional</span></label><input id="trusted_cert" name="trusted_cert" maxlength="64" minlength="64" pattern="[a-fA-F0-9]{64}" title="Enter the 64 hexadecimal characters of the certificate SHA-256 fingerprint" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="SHA-256 fingerprint">
-                <p class="field-note">Use a fingerprint verified with your VPN administrator. Otherwise, normal certificate validation applies.</p>
+                <p class="field-note">Use a fingerprint verified with your VPN administrator. This field is ignored when certificate validation is disabled.</p>
               </div>
             </details>
           </fieldset>

@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 
 
-PROFILE_FIELDS = ('name', 'host', 'port', 'username', 'realm', 'trusted_cert')
+PROFILE_FIELDS = ('name', 'host', 'port', 'username', 'realm', 'trusted_cert', 'ignore_cert', 'otp_mode')
 
 
 def validate_config(data, *, profile=False):
@@ -29,7 +29,14 @@ def validate_config(data, *, profile=False):
     if set(data) - allowed:
         raise ValueError('Unknown connection field.')
     result = {}
-    for key in allowed - {'port'}:
+    ignore_cert = data.get('ignore_cert', False)
+    if not isinstance(ignore_cert, bool):
+        raise ValueError('Ignore certificate validation must be true or false.')
+    result['ignore_cert'] = ignore_cert
+    result['otp_mode'] = data.get('otp_mode', 'append')
+    if result['otp_mode'] not in ('append', 'separate'):
+        raise ValueError('Choose append-to-password or separate-challenge OTP mode.')
+    for key in allowed - {'port', 'ignore_cert', 'otp_mode'}:
         value = data.get(key, '')
         if not isinstance(value, str) or len(value) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ValueError(f'Invalid {key.replace("_", " ")}.')
@@ -50,6 +57,12 @@ def validate_config(data, *, profile=False):
     result['port'] = int(port)
     if result['trusted_cert'] and not re.fullmatch('[a-fA-F0-9]{64}', result['trusted_cert']):
         raise ValueError('Trusted certificate must be a 64-character SHA-256 fingerprint.')
+    if not profile:
+        credential = result['password'] + (result['otp'] if result['otp_mode'] == 'append' else '')
+        if len(credential.encode('utf-8')) > 256:
+            raise ValueError('Password plus appended code must fit in 256 UTF-8 bytes.')
+        if result['otp_mode'] == 'separate' and len(result['otp'].encode('utf-8')) > 64:
+            raise ValueError('A separate one-time code must fit in 64 UTF-8 bytes.')
     return result
 
 
@@ -73,6 +86,34 @@ def test_gateway(data):
     return {'reachable': reachable, 'message':
             'Gateway TCP port is reachable. VPN login and TLS were not tested.' if reachable else
             'Gateway TCP port could not be reached. Check the address, port and network access.'}
+
+
+def gateway_fingerprint(host, port):
+    """Accept this attempt's presented certificate without CA/hostname checks.
+
+    The subprocess bounds DNS and TLS time, receives no login credentials, and
+    returns only the digest. No observed certificate is persisted or trusted by
+    the operating system. The VPN client still uses TLS and this digest.
+    """
+    probe = """import hashlib,socket,ssl,sys
+context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+context.check_hostname=False
+context.verify_mode=ssl.CERT_NONE
+context.minimum_version=ssl.TLSVersion.TLSv1_2
+with socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=5) as raw:
+    with context.wrap_socket(raw,server_hostname=sys.argv[1]) as peer:
+        print(hashlib.sha256(peer.getpeercert(binary_form=True)).hexdigest())
+"""
+    try:
+        result = subprocess.run([sys.executable, '-c', probe, host, str(port)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, timeout=8)
+        digest = result.stdout.strip()
+        if result.returncode or not re.fullmatch('[a-f0-9]{64}', digest):
+            raise RuntimeError('Could not read the gateway certificate. Check the gateway address, port and TLS service.')
+        return digest
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError('Gateway certificate lookup failed or timed out. Check the gateway address, port and network access.') from None
 
 
 class ProfileStore:
@@ -162,11 +203,12 @@ class VPNDiagnostics:
 
 
 class VPNManager:
-    def __init__(self, runtime='/run/fortiproxy', timeout=60, run=subprocess.run, popen=subprocess.Popen):
+    def __init__(self, runtime='/run/fortiproxy', timeout=60, run=subprocess.run, popen=subprocess.Popen, certificate_fetch=gateway_fingerprint):
         self.runtime = Path(runtime)
         self.timeout = timeout
         self.run = run
         self.popen = popen
+        self.certificate_fetch = certificate_fetch
         self.lock = threading.RLock()
         self.process = None
         self.worker = None
@@ -212,9 +254,20 @@ class VPNManager:
         path = self.runtime / f'connection-{generation}.conf'
         try:
             self.runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-            # openfortivpn parses key/value lines; validation forbids line injection.
-            lines = [f'{key.replace("_", "-")} = {value}' for key, value in config.items()
-                     if key != 'name' and value != '']
+            with self.lock:
+                if not self._alive(generation):
+                    return
+                bootstrap = self.runtime / 'bootstrap-resolv.conf'
+                if bootstrap.exists():
+                    Path('/etc/resolv.conf').write_text(bootstrap.read_text())
+            client = {key: value for key, value in config.items()
+                      if key not in ('name', 'ignore_cert', 'otp_mode')}
+            if config['otp_mode'] == 'append':
+                client['password'] += client.pop('otp', '')
+            if config['ignore_cert']:
+                client['trusted_cert'] = self.certificate_fetch(config['host'], config['port'])
+            # Validation forbids line injection; only native client keys are emitted.
+            lines = [f'{key.replace("_", "-")} = {value}' for key, value in client.items() if value != '']
             lines += ['set-routes = 0', 'set-dns = 1', 'pppd-use-peerdns = 0',
                       'pppd-ifname = ppp0']
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -223,9 +276,6 @@ class VPNManager:
             with self.lock:
                 if not self._alive(generation):
                     return
-                bootstrap = self.runtime / 'bootstrap-resolv.conf'
-                if bootstrap.exists():
-                    Path('/etc/resolv.conf').write_text(bootstrap.read_text())
                 process = self.popen(['openfortivpn', '-c', str(path)], stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
                 self.process = process

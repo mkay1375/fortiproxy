@@ -19,7 +19,7 @@ const gatewayMessage = document.querySelector('#gateway-test-message');
 let testingGateway = false;
 let gatewayVersion = 0;
 const profileMessage = document.querySelector('#profile-message');
-const profileFields = ['name', 'host', 'port', 'username', 'realm', 'trusted_cert'];
+const profileFields = ['name', 'host', 'port', 'username', 'realm', 'trusted_cert', 'ignore_cert', 'otp_mode'];
 let profileReady = false;
 let saveTimer;
 let saveQueue = Promise.resolve();
@@ -91,12 +91,24 @@ async function request(path, data) {
   }
 }
 
+function syncAuthenticationOptions() {
+  const ignore = form.elements.namedItem('ignore_cert').checked;
+  form.elements.namedItem('trusted_cert').disabled = ignore;
+  document.querySelector('#certificate-warning').hidden = !ignore;
+  document.querySelector('#otp-note').textContent = form.elements.namedItem('otp_mode').value === 'append'
+    ? 'The code is appended directly to your password, with no separator.'
+    : 'The code is sent separately when the gateway requests a challenge.';
+}
+for (const key of ['ignore_cert', 'otp_mode']) {
+  form.elements.namedItem(key).addEventListener('change', syncAuthenticationOptions);
+}
+
 function saveProfile() {
   clearTimeout(saveTimer);
   const data = {};
   for (const key of profileFields) {
-    const value = form.elements.namedItem(key).value;
-    data[key] = key === 'port' ? Number(value) : value.trim();
+    const input = form.elements.namedItem(key);
+    data[key] = input.type === 'checkbox' ? input.checked : key === 'port' ? Number(input.value) : input.value.trim();
   }
   const version = ++saveVersion;
   profileMessage.textContent = 'Saving settings…';
@@ -128,8 +140,13 @@ async function restoreProfile() {
   try {
     const profile = await request('/api/profile');
     for (const key of profileFields) {
-      if (Object.hasOwn(profile, key)) form.elements.namedItem(key).value = profile[key];
+      if (Object.hasOwn(profile, key)) {
+        const input = form.elements.namedItem(key);
+        if (input.type === 'checkbox') input.checked = profile[key];
+        else input.value = profile[key];
+      }
     }
+    syncAuthenticationOptions();
     profileReady = true;
     profileMessage.textContent = Object.keys(profile).length ? 'Saved settings restored. Changes save automatically.' : 'Connection settings save automatically on disk.';
   } catch {
@@ -190,7 +207,8 @@ form.addEventListener('submit', async (event) => {
   if (submitting || !reachable || !form.reportValidity()) return;
   const data = Object.fromEntries(new FormData(form));
   data.port = Number(data.port);
-  for (const key of ['name', 'host', 'username', 'realm', 'trusted_cert']) data[key] = data[key].trim();
+  data.ignore_cert = form.elements.namedItem('ignore_cert').checked;
+  for (const key of ['name', 'host', 'username', 'realm', 'trusted_cert']) data[key] = (data[key] || '').trim();
   submitting = true;
   refreshVersion += 1;
   showError('');
