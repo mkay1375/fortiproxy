@@ -32,7 +32,7 @@ class ValidationTests(unittest.TestCase):
     def test_certificate_option_types_and_concatenated_credential_limits(self):
         self.assertFalse(validate_config(CONFIG)['ignore_cert'])
         self.assertEqual(validate_config(CONFIG)['otp_mode'], 'append')
-        for change in [{'ignore_cert': 'true'}, {'ignore_cert': 1}, {'otp_mode': 'unknown'},
+        for change in [{'ignore_cert': 'true'}, {'ignore_cert': 1}, {'save_password': 'true'}, {'otp_mode': 'unknown'},
                        {'password': 'p' * 255, 'otp': '12'},
                        {'password': 'é' * 128, 'otp': '1'},
                        {'otp_mode': 'separate', 'otp': '1' * 65}]:
@@ -136,7 +136,7 @@ class ProfileTests(unittest.TestCase):
             profile.update(name='Office', realm='staff', trusted_cert='a' * 64, ignore_cert=True, otp_mode='separate')
             saved = store.save(profile)
             self.assertEqual(ProfileStore(store.directory).load(), saved)
-            self.assertNotIn('password', store.path.read_text())
+            self.assertNotIn('password', json.loads(store.path.read_text()))
             self.assertNotIn('otp', json.loads(store.path.read_text()))
             self.assertEqual(store.path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(store.directory.stat().st_mode & 0o777, 0o700)
@@ -150,6 +150,72 @@ class ProfileTests(unittest.TestCase):
                     store.save({**original, **extra})
                 self.assertEqual(store.load(), original)
             self.assertEqual(list(Path(directory).glob('.profile-*')), [])
+
+    def test_password_storage_is_opt_in_private_and_never_returned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(directory)
+            public = store.save({**CONFIG, 'save_password': True})
+            self.assertTrue(public['save_password'])
+            self.assertTrue(public['has_saved_password'])
+            self.assertNotIn('password', public)
+            self.assertEqual(ProfileStore(directory).load(), public)
+            disk = json.loads(store.path.read_text())
+            self.assertEqual(disk['password'], CONFIG['password'])
+            self.assertNotIn('otp', disk)
+            self.assertEqual(store.path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(store.directory.stat().st_mode & 0o777, 0o700)
+            self.assertNotIn(CONFIG['password'], json.dumps(public))
+
+    def test_saved_base_password_reuse_never_persists_otp_or_combined_credential(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(directory)
+            store.save({**CONFIG, 'save_password': True})
+            request = {**CONFIG, 'save_password': True, 'password': '', 'otp': '654321'}
+            resolved = ProfileStore(directory).resolve_connect(request)
+            self.assertEqual(resolved['password'], CONFIG['password'])
+            self.assertEqual(resolved['otp'], '654321')
+            disk = store.path.read_text()
+            self.assertNotIn('654321', disk)
+            self.assertNotIn(CONFIG['password'] + '654321', disk)
+            with self.assertRaises(ValueError):
+                store.save({**CONFIG, 'save_password': True, 'otp': '654321'})
+
+    def test_nonbinding_updates_preserve_password_and_opt_out_removes_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(directory)
+            profile = {key: value for key, value in CONFIG.items() if key != 'password'}
+            store.save({**profile, 'password': CONFIG['password'], 'save_password': True})
+            updated = store.save({**profile, 'name': 'Renamed', 'save_password': True})
+            self.assertTrue(updated['has_saved_password'])
+            self.assertEqual(json.loads(store.path.read_text())['password'], CONFIG['password'])
+            removed = store.save({**profile, 'save_password': False})
+            self.assertFalse(removed['has_saved_password'])
+            self.assertNotIn('password', json.loads(store.path.read_text()))
+            with self.assertRaisesRegex(ValueError, 'No saved password'):
+                store.resolve_connect({**profile, 'save_password': True})
+
+    def test_password_binding_prevents_reuse_for_changed_connection(self):
+        for field, value in [('host', 'other.example.test'), ('port', 443),
+                             ('username', 'other-user'), ('realm', 'other-realm')]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                store = ProfileStore(directory)
+                store.save({**CONFIG, 'save_password': True})
+                changed = {key: item for key, item in CONFIG.items() if key != 'password'}
+                changed.update({field: value, 'save_password': True})
+                with self.assertRaisesRegex(ValueError, 'No saved password'):
+                    store.resolve_connect(changed)
+                self.assertFalse(store.save(changed)['has_saved_password'])
+                self.assertNotIn('password', json.loads(store.path.read_text()))
+
+    def test_replacing_saved_password_requires_fresh_explicit_password(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProfileStore(directory)
+            store.save({**CONFIG, 'save_password': True})
+            changed = {**CONFIG, 'host': 'other.example.test', 'password': 'fresh-password', 'save_password': True}
+            self.assertTrue(store.save(changed)['has_saved_password'])
+            self.assertEqual(store.resolve_connect({**changed, 'password': ''})['password'], 'fresh-password')
+            with self.assertRaises(ValueError):
+                store.save({**changed, 'has_saved_password': True})
 
     def test_atomic_write_failure_preserves_previous_profile(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -395,6 +461,28 @@ class HTTPBoundaryTests(unittest.TestCase):
         self.assertNotIn('otp', json.loads(body))
         headers['Origin'] = 'https://foreign.invalid'
         self.assertEqual(self.request('POST', '/api/profile', json.dumps(profile), headers)[0], 403)
+
+    def test_saved_password_api_redacts_secret_and_resolves_it_only_for_bound_target(self):
+        headers = {'Content-Type': 'application/json', 'X-Fortiproxy-Request': '1'}
+        profile = {**CONFIG, 'save_password': True}
+        status, body = self.request('POST', '/api/profile', json.dumps(profile), headers)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)['has_saved_password'])
+        self.assertNotIn(CONFIG['password'].encode(), body)
+        status, body = self.request('GET', '/api/profile')
+        self.assertEqual(status, 200)
+        self.assertNotIn('password', json.loads(body))
+        self.assertNotIn(CONFIG['password'].encode(), body)
+        with patch('app.server.manager.connect', return_value={'state': 'connecting'}) as connect:
+            request = {**profile, 'password': '', 'otp': '123456'}
+            self.assertEqual(self.request('POST', '/api/connect', json.dumps(request), headers)[0], 202)
+            self.assertEqual(connect.call_args.args[0]['password'], CONFIG['password'])
+            self.assertEqual(connect.call_args.args[0]['otp'], '123456')
+            self.assertEqual(self.request('POST', '/api/connect', json.dumps({**request, 'host': 'other.example.test'}), headers)[0], 400)
+            self.assertEqual(connect.call_count, 1)
+        request = {key: value for key, value in profile.items() if key != 'password'}
+        self.assertEqual(self.request('POST', '/api/profile', json.dumps({**request, 'save_password': False}), headers)[0], 200)
+        self.assertNotIn('password', json.loads((Path(self.profile_directory.name) / 'profile.json').read_text()))
 
     def test_gateway_api_checks_request_boundaries(self):
         headers = {'Content-Type': 'application/json', 'X-Fortiproxy-Request': '1'}

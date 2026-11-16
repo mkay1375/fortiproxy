@@ -1,4 +1,4 @@
-"""Local-only HTTP control plane; passwords exist only in a private runtime file."""
+"""Local-only HTTP control plane with explicit, private saved-password opt-in."""
 from __future__ import annotations
 
 import datetime
@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 
 
-PROFILE_FIELDS = ('name', 'host', 'port', 'username', 'realm', 'trusted_cert', 'ignore_cert', 'otp_mode')
+PROFILE_FIELDS = ('name', 'host', 'port', 'username', 'realm', 'trusted_cert', 'ignore_cert', 'otp_mode', 'save_password')
 
 
 def validate_config(data, *, profile=False):
@@ -33,10 +33,14 @@ def validate_config(data, *, profile=False):
     if not isinstance(ignore_cert, bool):
         raise ValueError('Ignore certificate validation must be true or false.')
     result['ignore_cert'] = ignore_cert
+    save_password = data.get('save_password', False)
+    if not isinstance(save_password, bool):
+        raise ValueError('Save password must be true or false.')
+    result['save_password'] = save_password
     result['otp_mode'] = data.get('otp_mode', 'append')
     if result['otp_mode'] not in ('append', 'separate'):
         raise ValueError('Choose append-to-password or separate-challenge OTP mode.')
-    for key in allowed - {'port', 'ignore_cert', 'otp_mode'}:
+    for key in allowed - {'port', 'ignore_cert', 'otp_mode', 'save_password'}:
         value = data.get(key, '')
         if not isinstance(value, str) or len(value) > 255 or any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ValueError(f'Invalid {key.replace("_", " ")}.')
@@ -117,24 +121,59 @@ with socket.create_connection((sys.argv[1],int(sys.argv[2])),timeout=5) as raw:
 
 
 class ProfileStore:
-    """One persistent, validated profile containing only non-secret fields."""
+    """Private profile storage; base passwords persist only after explicit opt-in."""
+    BINDING_FIELDS = ('host', 'port', 'username', 'realm')
+
     def __init__(self, directory):
         self.directory = Path(directory)
         self.path = self.directory / 'profile.json'
         self.lock = threading.Lock()
 
+    @classmethod
+    def _binding(cls, profile):
+        return tuple(profile.get(key) for key in cls.BINDING_FIELDS)
+
+    @staticmethod
+    def _public(profile):
+        if not profile:
+            return {}
+        public = {key: value for key, value in profile.items() if key != 'password'}
+        public['has_saved_password'] = bool(profile.get('save_password') and profile.get('password'))
+        return public
+
+    @staticmethod
+    def _validate_profile(data):
+        if not isinstance(data, dict):
+            raise ValueError('Enter a connection configuration.')
+        fields = {key: value for key, value in data.items() if key != 'password'}
+        profile = validate_config(fields, profile=True)
+        if 'password' in data:
+            if not profile['save_password']:
+                raise ValueError('Enable Save password before storing a password.')
+            password = data['password']
+            if password != '':
+                # The native credential validation also bounds UTF-8 byte length.
+                profile['password'] = validate_config({**profile, 'password': password})['password']
+        return profile
+
+    def _read(self):
+        try:
+            return self._validate_profile(json.loads(self.path.read_text()))
+        except FileNotFoundError:
+            return {}
+
     def load(self):
         with self.lock:
-            try:
-                data = self.path.read_text()
-            except FileNotFoundError:
-                return {}
-            return validate_config(json.loads(data), profile=True)
+            return self._public(self._read())
 
     def save(self, data):
-        # Reject secret/unknown keys rather than silently accepting them.
-        profile = validate_config(data, profile=True)
+        profile = self._validate_profile(data)
         with self.lock:
+            previous = self._read()
+            if (profile['save_password'] and 'password' not in profile
+                    and previous.get('save_password') and previous.get('password')
+                    and self._binding(profile) == self._binding(previous)):
+                profile['password'] = previous['password']
             self.directory.mkdir(parents=True, mode=0o700, exist_ok=True)
             self.directory.chmod(0o700)
             temporary = None
@@ -149,7 +188,24 @@ class ProfileStore:
             finally:
                 if temporary is not None:
                     temporary.unlink(missing_ok=True)
-        return profile
+        return self._public(profile)
+
+    def resolve_connect(self, data):
+        """Resolve an omitted base password without returning it through an API."""
+        if not isinstance(data, dict) or set(data) - (set(PROFILE_FIELDS) | {'password', 'otp'}):
+            raise ValueError('Unknown connection field.')
+        config = dict(data)
+        if config.get('password', '') != '' or config.get('save_password') is not True:
+            return validate_config(config)
+        target = validate_config({key: value for key, value in config.items()
+                                  if key in PROFILE_FIELDS}, profile=True)
+        with self.lock:
+            saved = self._read()
+            if (not saved.get('save_password') or not saved.get('password')
+                    or self._binding(target) != self._binding(saved)):
+                raise ValueError('No saved password matches this connection. Enter your password.')
+            config['password'] = saved['password']
+        return validate_config(config)
 
 
 class VPNDiagnostics:
@@ -261,7 +317,7 @@ class VPNManager:
                 if bootstrap.exists():
                     Path('/etc/resolv.conf').write_text(bootstrap.read_text())
             client = {key: value for key, value in config.items()
-                      if key not in ('name', 'ignore_cert', 'otp_mode')}
+                      if key not in ('name', 'ignore_cert', 'otp_mode', 'save_password')}
             if config['otp_mode'] == 'append':
                 client['password'] += client.pop('otp', '')
             if config['ignore_cert']:
@@ -435,7 +491,7 @@ class Handler(SimpleHTTPRequestHandler):
             if self.path == '/api/profile':
                 return self._json(200, profiles.save(data))
             if self.path == '/api/connect':
-                return self._json(202, manager.connect(data))
+                return self._json(202, manager.connect(profiles.resolve_connect(data)))
             if self.path == '/api/disconnect':
                 return self._json(200, manager.disconnect())
             return self._json(404, {'error': 'Unknown endpoint.'})
