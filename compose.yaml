@@ -1,0 +1,20 @@
+services:
+  fortiproxy:
+    build: .
+    image: fortiproxy:local
+    init: false
+    cap_add:
+      - NET_ADMIN
+    device_cgroup_rules:
+      - "c 108:* rwm"
+    ports:
+      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:1080:1080"
+      - "127.0.0.1:8080:8080"
+    tmpfs:
+      - /run:rw,nosuid,nodev,mode=755
+      - /tmp:rw,nosuid,nodev,mode=1777
+    restart: unless-stopped
+    stop_grace_period: 15s
+    pids_limit: 128
+    mem_limit: 256m
