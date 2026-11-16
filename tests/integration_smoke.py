@@ -130,7 +130,7 @@ def main():
         docker('network', 'create', '--internal', '--subnet', subnet + '.0/24', network)
         docker('run', '-d', '--name', peer, '--network', network, '--ip', target,
                '--entrypoint', 'python3', args.image, '-u', '-c', SERVER.replace('__TARGET__', target))
-        docker('create', '--name', app, '--cap-add', 'NET_ADMIN', '--network', 'bridge',
+        docker('create', '--name', app, '--cap-add', 'NET_ADMIN', '--device-cgroup-rule', 'c 108:* rwm', '--network', 'bridge',
                '--tmpfs', '/run', '--tmpfs', '/tmp',
                '-p', '127.0.0.1::8787', '-p', '127.0.0.1::1080', '-p', '127.0.0.1::8080', args.image)
         docker('network', 'connect', '--ip', subnet + '.2', network, app)
@@ -159,6 +159,7 @@ def main():
         docker('exec', app, 'ip', 'link', 'set', interface, 'down')
         docker('exec', app, 'ip', 'link', 'set', interface, 'name', 'ppp0')
         docker('exec', app, 'ip', 'link', 'set', 'ppp0', 'up')
+        docker('exec', app, 'ip', 'route', 'replace', 'table', '108', 'default', 'dev', 'ppp0', 'metric', '10')
         docker('exec', app, 'sh', '-c', f'printf "nameserver {target}\\noptions timeout:1 attempts:1\\n" > /etc/resolv.conf')
         hostname = 'smoke.fortiproxy.test'
         for kind, fetch in [('HTTP', lambda: http_proxy(ports[8080], hostname)),
