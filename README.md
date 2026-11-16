@@ -18,13 +18,8 @@ docker compose pull
 docker compose up -d
 ```
 
-Already cloned the repo? Run the last two commands from its root.
-The image, `ghcr.io/mkay1375/fortiproxy:latest`, supports Linux AMD64 and ARM64,
-including Apple Silicon through Docker Desktop. It becomes available after the
-first successful publishing workflow and after the GHCR package is made public.
-
 Open **http://localhost:48731**, enter your gateway, port, username and password,
-then select **Connect**. Custom ports such as `10443` are supported.
+then select **Connect**.
 
 | Service | Local address |
 | --- | --- |
