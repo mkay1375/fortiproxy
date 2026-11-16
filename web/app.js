@@ -22,6 +22,7 @@ let refreshVersion = 0;
 const descriptions = {
   disconnected: ['Disconnected', 'Ready when you are', 'Enter your VPN settings and connect to enable the local proxies.'],
   connecting: ['Connecting', 'Establishing your tunnel', 'Authenticating with the gateway. Proxy traffic stays blocked until the VPN is ready.'],
+  disconnecting: ['Disconnecting', 'Closing your tunnel', 'Stopping the VPN and clearing the connection credentials.'],
   connected: ['Connected', 'Your tunnel is ready', 'Use a local proxy address below in the apps you want to route through the VPN.'],
   error: ['Connection failed', 'Could not connect', 'Check your connection settings and try again.'],
 };
@@ -33,7 +34,7 @@ function showError(message) {
 
 function render() {
   const state = reachable && status ? status.state : 'unknown';
-  const active = state === 'connecting' || state === 'connected';
+  const active = state === 'connecting' || state === 'connected' || state === 'disconnecting';
   const description = descriptions[state];
   badge.dataset.state = state;
   tunnel.dataset.state = state;
@@ -42,9 +43,10 @@ function render() {
   statusMessage.textContent = description ? (status.message || description[2]) : 'Cannot read the VPN status. Check that the container is running; this page will retry automatically.';
   fields.disabled = submitting || active || !reachable;
   connectButton.disabled = submitting || active || !reachable;
-  connectButton.querySelector('span').textContent = submitting ? 'Please wait…' : state === 'connecting' ? 'Connecting…' : state === 'connected' ? 'VPN connected' : 'Connect VPN';
+  connectButton.querySelector('span').textContent = submitting ? 'Please wait…' : state === 'connecting' ? 'Connecting…' : state === 'connected' ? 'VPN connected' : state === 'disconnecting' ? 'Disconnecting…' : 'Connect VPN';
   disconnectButton.hidden = !active;
-  disconnectButton.disabled = submitting || !reachable;
+  disconnectButton.disabled = submitting || !reachable || state === 'disconnecting';
+  disconnectButton.textContent = state === 'disconnecting' ? 'Disconnecting…' : 'Disconnect VPN';
   availability.textContent = state === 'connected' ? 'Ready to use' : state === 'unknown' ? 'Status unavailable' : 'Waiting for VPN';
   updateTime();
 }
