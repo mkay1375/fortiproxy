@@ -17,6 +17,7 @@ const availability = document.querySelector('#proxy-availability');
 let status = null;
 let reachable = false;
 let submitting = false;
+let refreshVersion = 0;
 
 const descriptions = {
   disconnected: ['Disconnected', 'Ready when you are', 'Enter your VPN settings and connect to enable the local proxies.'],
@@ -79,12 +80,15 @@ async function request(path, data) {
 
 async function refresh() {
   if (submitting) return;
+  const version = ++refreshVersion;
   try {
     const result = await request('/api/status');
     if (!(result.state in descriptions)) throw new Error('Invalid connection status.');
+    if (version !== refreshVersion || submitting) return;
     status = result;
     reachable = true;
   } catch {
+    if (version !== refreshVersion || submitting) return;
     reachable = false;
   }
   if (!submitting) render();
@@ -97,6 +101,7 @@ form.addEventListener('submit', async (event) => {
   data.port = Number(data.port);
   for (const key of ['name', 'host', 'username', 'realm', 'trusted_cert']) data[key] = data[key].trim();
   submitting = true;
+  refreshVersion += 1;
   showError('');
   render();
   try {
@@ -114,6 +119,7 @@ form.addEventListener('submit', async (event) => {
 disconnectButton.addEventListener('click', async () => {
   if (submitting) return;
   submitting = true;
+  refreshVersion += 1;
   showError('');
   render();
   try {
@@ -156,6 +162,9 @@ for (const button of document.querySelectorAll('[data-copy]')) {
 }
 
 window.addEventListener('pagehide', () => { password.value = ''; otp.value = ''; });
-void refresh();
-setInterval(refresh, 2000);
+async function poll() {
+  await refresh();
+  setTimeout(poll, 2000);
+}
+void poll();
 setInterval(updateTime, 1000);
