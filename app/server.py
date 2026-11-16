@@ -111,6 +111,53 @@ class ProfileStore:
         return profile
 
 
+class VPNDiagnostics:
+    """Drain client output, retaining only a fixed, non-secret error category."""
+    RULES = (
+        (('certificate validation failed', 'certificate verify failed', 'self-signed certificate', 'hostname mismatch'),
+         'Gateway certificate validation failed. Ask your VPN administrator for a verified SHA-256 fingerprint and enter it in Additional settings. TLS verification remains enabled.'),
+        (('could not read otp', 'could not read the otp', 'could not read token', 'could not read the token'),
+         'The gateway requested a one-time code. Enter a fresh code in Additional settings and reconnect.'),
+        (('could not authenticate', 'authentication failed', 'login failed', 'permission denied by gateway'),
+         'Gateway login was rejected. Check your username, password, realm and any required one-time code.'),
+        (('bad key in configuration', 'bad value in configuration', 'unrecognized option', 'invalid option'),
+         'The VPN client rejected a connection option. Check the container client configuration.'),
+        (('could not open /dev/ppp', 'pppd:', 'pppd exited', 'ppp support', 'failed to start pppd'),
+         'The PPP tunnel could not start or stopped unexpectedly. Check the container PPP device and permissions.'),
+        (('ssl_connect', 'tls handshake', 'ssl handshake', 'handshake failure'),
+         'The gateway TLS handshake failed. Check the gateway address, port and server TLS requirements.'),
+        (('getaddrinfo', 'could not resolve', 'connection refused', 'connection timed out', 'could not connect', 'no route to host', 'network is unreachable'),
+         'The VPN client could not reach the gateway. Use Test gateway and check the address, port and network access.'),
+    )
+
+    def __init__(self):
+        self.category = len(self.RULES)
+        self.lock = threading.Lock()
+
+    def read(self, stream):
+        try:
+            while True:
+                chunk = stream.readline(4096)
+                if not chunk:
+                    break
+                text = chunk.decode('utf-8', errors='replace').lower()
+                for index, (patterns, _) in enumerate(self.RULES):
+                    if any(pattern in text for pattern in patterns):
+                        with self.lock:
+                            self.category = min(self.category, index)
+                        break
+        except (OSError, ValueError):
+            pass
+        finally:
+            stream.close()
+
+    def message(self, returncode):
+        with self.lock:
+            if self.category < len(self.RULES):
+                return self.RULES[self.category][1]
+        return f'VPN client exited (code {returncode}). No recognized failure reason was reported. Check the gateway requirements with your VPN administrator.'
+
+
 class VPNManager:
     def __init__(self, runtime='/run/fortiproxy', timeout=60, run=subprocess.run, popen=subprocess.Popen):
         self.runtime = Path(runtime)
@@ -155,6 +202,8 @@ class VPNManager:
 
     def _connect(self, config, generation):
         process = None
+        reader = None
+        diagnostics = VPNDiagnostics()
         failure = None
         routed = False
         path = self.runtime / f'connection-{generation}.conf'
@@ -175,15 +224,21 @@ class VPNManager:
                 if bootstrap.exists():
                     Path('/etc/resolv.conf').write_text(bootstrap.read_text())
                 process = self.popen(['openfortivpn', '-c', str(path)], stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
                 self.process = process
+                if getattr(process, 'stdout', None) is not None:
+                    reader = threading.Thread(target=diagnostics.read, args=(process.stdout,), daemon=True)
+                    reader.start()
             started = time.monotonic()
             while True:
                 with self.lock:
                     if not self._alive(generation):
                         return
-                    if process.poll() is not None:
-                        raise RuntimeError('VPN connection ended. Check your credentials, gateway and certificate; reconnect to retry.')
+                    returncode = process.poll()
+                    if returncode is not None:
+                        if reader is not None:
+                            reader.join(timeout=1)
+                        raise RuntimeError(diagnostics.message(returncode))
                     ready = self._tunnel_ready()
                     if self.state == 'connecting' and ready:
                         self.run(['ip', 'route', 'replace', 'table', '108', 'default', 'dev', 'ppp0', 'metric', '10'], check=True, capture_output=True, timeout=3)
@@ -209,6 +264,8 @@ class VPNManager:
                     self._stop(process)
             finally:
                 path.unlink(missing_ok=True)
+                if reader is not None:
+                    reader.join(timeout=1)
             with self.lock:
                 if self.process is process:
                     self.process = None

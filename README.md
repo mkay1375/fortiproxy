@@ -117,8 +117,9 @@ interfaces to test HTTP, CONNECT, SOCKS, DNS and fail-closed behavior. It never
 uses your real VPN configuration. It is not a FortiGate protocol emulator and does not validate authentication against a real server.
 
 Stop the service with `docker compose down`. Inspect health with
-`docker compose ps`. The control plane intentionally reports sanitized errors
-instead of exposing potentially sensitive VPN output. Check gateway, credentials,
+`docker compose ps`. The control plane classifies VPN client output into fixed, sanitized errors
+for certificate, login, network, TLS, option and PPP failures. Raw output is
+drained in memory and never logged, returned to the browser or saved on disk. Check gateway, credentials,
 MFA and certificate trust if a connection fails.
 
 Client documentation: [openfortivpn](https://github.com/adrienverge/openfortivpn),

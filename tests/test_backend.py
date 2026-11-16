@@ -1,4 +1,5 @@
 import json
+import io
 import http.client
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from app.server import Handler, ThreadingHTTPServer, VPNManager, ProfileStore, test_gateway, validate_config
+from app.server import Handler, ThreadingHTTPServer, VPNManager, ProfileStore, VPNDiagnostics, test_gateway, validate_config
 
 
 CONFIG = {'host': 'vpn.example.test', 'port': 10443, 'username': 'test-user', 'password': 'test-password'}
@@ -34,6 +35,39 @@ class ValidationTests(unittest.TestCase):
                 validate_config({**CONFIG, 'port': value})
         with self.assertRaises(ValueError):
             validate_config({**CONFIG, 'insecure-ssl': True})
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_errors_are_classified_without_exposing_raw_client_output(self):
+        examples = [
+            (b'ERROR: Gateway certificate validation failed.', 'certificate validation failed'),
+            (b'ERROR: Could not authenticate to gateway.', 'login was rejected'),
+            (b'ERROR: Could not read OTP.', 'one-time code'),
+            (b'pppd: Could not open /dev/ppp', 'PPP tunnel'),
+            (b'ERROR: SSL_connect: handshake failure', 'TLS handshake failed'),
+            (b'ERROR: connect: Connection refused', 'could not reach the gateway'),
+            (b'pppd: unrecognized option bad-option', 'rejected a connection option'),
+        ]
+        for output, expected in examples:
+            with self.subTest(output=output):
+                diagnostics = VPNDiagnostics()
+                diagnostics.read(io.BytesIO(output + b' password=super-secret SVPNCOOKIE=private-session'))
+                message = diagnostics.message(1)
+                self.assertIn(expected, message)
+                self.assertNotIn('super-secret', message)
+                self.assertNotIn('private-session', message)
+                self.assertNotIn('SVPNCOOKIE', message)
+
+    def test_certificate_root_cause_wins_over_later_generic_tls_error(self):
+        diagnostics = VPNDiagnostics()
+        diagnostics.read(io.BytesIO(b'ERROR: Gateway certificate validation failed.\nERROR: SSL_connect failed.\n'))
+        self.assertIn('certificate validation failed', diagnostics.message(1))
+
+    def test_unknown_output_does_not_escape_into_status(self):
+        diagnostics = VPNDiagnostics()
+        diagnostics.read(io.BytesIO(b'secret-cookie=' + b'x' * 100000))
+        self.assertIn('code 7', diagnostics.message(7))
+        self.assertNotIn('secret-cookie', diagnostics.message(7))
 
 
 class GatewayTests(unittest.TestCase):
@@ -160,6 +194,15 @@ class LifecycleTests(unittest.TestCase):
         self.manager.connect(CONFIG)
         eventually(lambda: self.manager.status()['state'] == 'error')
         self.assertEqual(self.process.poll(), -15)
+        self.assertEqual(list(Path(self.temp.name).glob('connection-*')), [])
+
+    def test_early_client_exit_reports_safe_certificate_error_and_cleans_secret(self):
+        self.process.stdout = io.BytesIO(b'ERROR: Gateway certificate validation failed. password=do-not-display\n')
+        self.process.returncode = 1
+        self.manager.connect(CONFIG)
+        eventually(lambda: self.manager.status()['state'] == 'error')
+        self.assertIn('certificate validation failed', self.manager.status()['message'])
+        self.assertNotIn('do-not-display', json.dumps(self.manager.status()))
         self.assertEqual(list(Path(self.temp.name).glob('connection-*')), [])
 
     def test_cannot_replace_active_connection(self):
