@@ -10,6 +10,7 @@ const otp = document.querySelector('#otp');
 const savePassword = document.querySelector('#save_password');
 const passwordSaveNote = document.querySelector('#password-save-note');
 let savedPasswordBinding = null;
+let enteredPasswordBinding = null;
 const badge = document.querySelector('#status-badge');
 const statusLabel = document.querySelector('#status-label');
 const statusTitle = document.querySelector('#status-title');
@@ -99,11 +100,15 @@ function passwordBinding(profile) {
     String(profile.username || '').trim(), String(profile.realm || '').trim()]);
 }
 
-function syncSavedPassword() {
+function currentPasswordBinding() {
   const current = {};
   for (const key of ['host', 'port', 'username', 'realm']) current[key] = form.elements.namedItem(key).value;
+  return passwordBinding(current);
+}
+
+function syncSavedPassword() {
   const reusable = savePassword.checked && savedPasswordBinding !== null
-    && savedPasswordBinding === passwordBinding(current);
+    && savedPasswordBinding === currentPasswordBinding();
   password.required = !reusable;
   password.placeholder = reusable ? 'Saved password' : '';
   passwordSaveNote.textContent = !savePassword.checked
@@ -117,10 +122,20 @@ function applyPasswordMetadata(profile) {
   syncSavedPassword();
 }
 
-for (const key of ['host', 'port', 'username', 'realm', 'save_password']) {
-  form.elements.namedItem(key).addEventListener('input', syncSavedPassword);
-  form.elements.namedItem(key).addEventListener('change', syncSavedPassword);
+function connectionBindingChanged() {
+  if (password.value && enteredPasswordBinding !== null
+      && enteredPasswordBinding !== currentPasswordBinding()) {
+    password.value = '';
+    enteredPasswordBinding = null;
+  }
+  syncSavedPassword();
 }
+for (const key of ['host', 'port', 'username', 'realm']) {
+  form.elements.namedItem(key).addEventListener('input', connectionBindingChanged);
+  form.elements.namedItem(key).addEventListener('change', connectionBindingChanged);
+}
+savePassword.addEventListener('input', syncSavedPassword);
+savePassword.addEventListener('change', syncSavedPassword);
 
 function syncAuthenticationOptions() {
   const ignore = form.elements.namedItem('ignore_cert').checked;
@@ -162,6 +177,7 @@ for (const key of profileFields) {
   const input = form.elements.namedItem(key);
   input.addEventListener('input', () => {
     if (!profileReady) return;
+    saveVersion += 1;
     clearTimeout(saveTimer);
     profileMessage.textContent = 'Unsaved changes…';
     saveTimer = setTimeout(() => { void saveProfile().catch(() => {}); }, 400);
@@ -172,12 +188,15 @@ for (const key of profileFields) {
 }
 
 password.addEventListener('input', () => {
+  enteredPasswordBinding = password.value ? currentPasswordBinding() : null;
   if (!profileReady || !savePassword.checked) return;
+  saveVersion += 1;
   clearTimeout(saveTimer);
   profileMessage.textContent = 'Unsaved changes…';
   saveTimer = setTimeout(() => { void saveProfile().catch(() => {}); }, 400);
 });
 password.addEventListener('change', () => {
+  enteredPasswordBinding = password.value ? currentPasswordBinding() : null;
   if (profileReady && savePassword.checked) void saveProfile().catch(() => {});
 });
 
