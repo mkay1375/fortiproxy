@@ -1,4 +1,5 @@
 import json
+import http.client
 import os
 from pathlib import Path
 import subprocess
@@ -7,7 +8,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from app.server import VPNManager, validate_config
+from app.server import Handler, ThreadingHTTPServer, VPNManager, validate_config
 
 
 CONFIG = {'host': 'vpn.example.test', 'port': 10443, 'username': 'test-user', 'password': 'test-password'}
@@ -119,6 +120,50 @@ class LifecycleTests(unittest.TestCase):
         release.set()
         thread.join(3)
         self.assertEqual(self.manager.status()['state'], 'disconnected')
+
+
+class HTTPBoundaryTests(unittest.TestCase):
+    def setUp(self):
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.port = self.server.server_port
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def request(self, method, path, body=None, headers=None):
+        connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)
+        connection.request(method, path, body, headers or {})
+        response = connection.getresponse()
+        result = response.status, response.read()
+        connection.close()
+        return result
+
+    def test_status_allows_local_mapped_port(self):
+        status, body = self.request('GET', '/api/status')
+        self.assertEqual(status, 200)
+        self.assertNotIn('password', json.loads(body))
+
+    def test_hostile_host_cannot_read_status(self):
+        status, _ = self.request('GET', '/api/status', headers={'Host': 'evil.example'})
+        self.assertEqual(status, 403)
+
+    def test_changes_require_custom_header_and_matching_origin(self):
+        headers = {'Content-Type': 'application/json'}
+        self.assertEqual(self.request('POST', '/api/disconnect', '{}', headers)[0], 403)
+        headers['X-Fortiproxy-Request'] = '1'
+        headers['Origin'] = 'https://evil.example'
+        self.assertEqual(self.request('POST', '/api/disconnect', '{}', headers)[0], 403)
+        headers['Origin'] = f'http://127.0.0.1:{self.port}'
+        self.assertEqual(self.request('POST', '/api/disconnect', '{}', headers)[0], 200)
+
+    def test_unknown_fields_and_large_bodies_rejected_without_connecting(self):
+        headers = {'Content-Type': 'application/json', 'X-Fortiproxy-Request': '1'}
+        self.assertEqual(self.request('POST', '/api/connect', json.dumps({**CONFIG, 'insecure-ssl': True}), headers)[0], 400)
+        self.assertEqual(self.request('POST', '/api/connect', 'x' * 8193, headers)[0], 400)
 
 
 if __name__ == '__main__':

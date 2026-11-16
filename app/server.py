@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import signal
-import socket
 import subprocess
 import threading
 import time
@@ -138,10 +137,15 @@ class VPNManager:
             failure = str(error) if isinstance(error, RuntimeError) else 'Unable to start the VPN. Check the container runtime permissions.'
         finally:
             if routed:
-                self.run(['ip', 'route', 'del', 'table', '108', 'default', 'dev', 'ppp0', 'metric', '10'], capture_output=True, timeout=3)
-            if process is not None:
-                self._stop(process)
-            path.unlink(missing_ok=True)
+                try:
+                    self.run(['ip', 'route', 'del', 'table', '108', 'default', 'dev', 'ppp0', 'metric', '10'], capture_output=True, timeout=3)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass  # The process must still be reaped and secrets removed.
+            try:
+                if process is not None:
+                    self._stop(process)
+            finally:
+                path.unlink(missing_ok=True)
             with self.lock:
                 if self.process is process:
                     self.process = None
