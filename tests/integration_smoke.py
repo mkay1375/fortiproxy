@@ -17,13 +17,23 @@ import time
 import uuid
 
 MARKER = b'fortiproxy-isolated-smoke'
-SERVER = '''import http.server, socketserver, threading
+SERVER = '''import http.server, socketserver, threading, socket, struct
 class HTTP(http.server.BaseHTTPRequestHandler):
  def do_GET(self):
   self.send_response(200); self.end_headers(); self.wfile.write(b"fortiproxy-isolated-smoke")
  def log_message(self,*args): pass
 class UDP(socketserver.BaseRequestHandler):
- def handle(self): self.request[1].sendto(b"dns-probe",self.client_address)
+ def handle(self):
+  query, sock = self.request
+  if query == b"probe":
+   sock.sendto(b"dns-probe",self.client_address); return
+  end = 12
+  while query[end]: end += query[end] + 1
+  end += 5
+  question = query[12:end]
+  is_a = query[end-4:end-2] == b"\\x00\\x01"
+  answer = b"\\xc0\\x0c" + struct.pack("!HHIH",1,1,0,4) + socket.inet_aton("__TARGET__") if is_a else b""
+  sock.sendto(query[:2] + struct.pack("!HHHHH",0x8180,1,int(is_a),0,0) + question + answer,self.client_address)
 for port in (8000,443):
  threading.Thread(target=http.server.HTTPServer(("0.0.0.0",port),HTTP).serve_forever,daemon=True).start()
 socketserver.UDPServer(("0.0.0.0",53),UDP).serve_forever()
@@ -88,7 +98,8 @@ def socks_proxy(port, target):
         sock.sendall(b'\x05\x01\x00')
         if receive(sock, 2) != b'\x05\x00':
             raise OSError('SOCKS greeting rejected')
-        sock.sendall(b'\x05\x01\x00\x01' + socket.inet_aton(target) + struct.pack('!H', 8000))
+        address = target.encode('ascii')
+        sock.sendall(b'\x05\x01\x00\x03' + bytes([len(address)]) + address + struct.pack('!H', 8000))
         reply = receive(sock, 4)
         if reply[1] != 0:
             raise OSError(f'SOCKS connect rejected ({reply[1]})')
@@ -118,7 +129,7 @@ def main():
     try:
         docker('network', 'create', '--internal', '--subnet', subnet + '.0/24', network)
         docker('run', '-d', '--name', peer, '--network', network, '--ip', target,
-               '--entrypoint', 'python3', args.image, '-u', '-c', SERVER)
+               '--entrypoint', 'python3', args.image, '-u', '-c', SERVER.replace('__TARGET__', target))
         docker('create', '--name', app, '--cap-add', 'NET_ADMIN', '--network', 'bridge',
                '--tmpfs', '/run', '--tmpfs', '/tmp',
                '-p', '127.0.0.1::8787', '-p', '127.0.0.1::1080', '-p', '127.0.0.1::8080', args.image)
@@ -148,9 +159,11 @@ def main():
         docker('exec', app, 'ip', 'link', 'set', interface, 'down')
         docker('exec', app, 'ip', 'link', 'set', interface, 'name', 'ppp0')
         docker('exec', app, 'ip', 'link', 'set', 'ppp0', 'up')
-        for kind, fetch in [('HTTP', lambda: http_proxy(ports[8080], target)),
-                            ('HTTP CONNECT', lambda: http_proxy(ports[8080], target, True)),
-                            ('SOCKS5', lambda: socks_proxy(ports[1080], target))]:
+        docker('exec', app, 'sh', '-c', f'printf "nameserver {target}\\noptions timeout:1 attempts:1\\n" > /etc/resolv.conf')
+        hostname = 'smoke.fortiproxy.test'
+        for kind, fetch in [('HTTP', lambda: http_proxy(ports[8080], hostname)),
+                            ('HTTP CONNECT', lambda: http_proxy(ports[8080], hostname, True)),
+                            ('SOCKS5', lambda: socks_proxy(ports[1080], hostname))]:
             assert MARKER in fetch(), kind + ' did not reach isolated peer through ppp0'
             print('PASS: ' + kind + ' through synthetic tunnel interface')
         dns_probe = 'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(2); s.sendto(b"probe",("' + target + '",53)); assert s.recv(100)==b"dns-probe"'
