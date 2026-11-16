@@ -34,7 +34,12 @@ jobs:
       - name: Check proxy isolation and fail-closed routing
         run: python3 tests/integration_smoke.py --image fortiproxy:local
       - name: Check SSL VPN protocol
-        run: python3 tests/fortisslvpn_smoke.py --image fortiproxy:local
+        # Containers cannot load host kernel modules themselves.
+        # ppp_async supplies the line discipline used by openfortivpn's PTY.
+        run: |
+          sudo modprobe ppp_generic
+          sudo modprobe ppp_async
+          python3 tests/fortisslvpn_smoke.py --image fortiproxy:local
 
   publish:
     needs: test
