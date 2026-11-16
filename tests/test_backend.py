@@ -155,6 +155,7 @@ class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.process = FakeProcess()
+        self.process.stdout = io.BytesIO(b'INFO:   Tunnel is up and running.\n')
         self.spawned = []
         self.ready = False
         def spawn(args, **kwargs):
@@ -189,6 +190,14 @@ class LifecycleTests(unittest.TestCase):
         self.ready = False
         eventually(lambda: self.manager.status()['state'] == 'error')
         self.assertEqual(self.process.poll(), -15)
+
+    def test_interface_address_alone_does_not_report_connected(self):
+        self.process.stdout = io.BytesIO(b'INFO: Negotiating tunnel.\n')
+        self.ready = True
+        self.manager.connect(CONFIG)
+        eventually(lambda: self.manager.status()['state'] == 'error')
+        self.assertIn('timed out', self.manager.status()['message'])
+        self.assertIsNone(self.manager.status()['connected_at'])
 
     def test_timeout_stops_process_and_removes_secret(self):
         self.manager.connect(CONFIG)

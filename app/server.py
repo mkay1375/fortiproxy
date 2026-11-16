@@ -132,6 +132,7 @@ class VPNDiagnostics:
 
     def __init__(self):
         self.category = len(self.RULES)
+        self.ready = threading.Event()
         self.lock = threading.Lock()
 
     def read(self, stream):
@@ -141,6 +142,8 @@ class VPNDiagnostics:
                 if not chunk:
                     break
                 text = chunk.decode('utf-8', errors='replace').lower()
+                if text.startswith('info:') and text.split(':', 1)[1].strip() == 'tunnel is up and running.':
+                    self.ready.set()
                 for index, (patterns, _) in enumerate(self.RULES):
                     if any(pattern in text for pattern in patterns):
                         with self.lock:
@@ -240,7 +243,7 @@ class VPNManager:
                             reader.join(timeout=1)
                         raise RuntimeError(diagnostics.message(returncode))
                     ready = self._tunnel_ready()
-                    if self.state == 'connecting' and ready:
+                    if self.state == 'connecting' and ready and diagnostics.ready.is_set():
                         self.run(['ip', 'route', 'replace', 'table', '108', 'default', 'dev', 'ppp0', 'metric', '10'], check=True, capture_output=True, timeout=3)
                         routed = True
                         self.state, self.message = 'connected', 'Tunnel connected. Proxy traffic is restricted to the VPN.'
