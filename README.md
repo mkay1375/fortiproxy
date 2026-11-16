@@ -1,7 +1,6 @@
-# Fortiproxy — Fortinet VPN in Docker
+# Fortiproxy
 
-Run a Fortinet VPN connection inside a Docker container and use it from
-individual apps through SOCKS5 or HTTP proxies. VPN traffic, DNS, and routing
+Run a Fortinet VPN connection inside a Docker container and use it through SOCKS5 or HTTP proxies. VPN traffic, DNS, and routing
 stay inside the container, leaving your host’s network settings unchanged.
 
 ![Fortiproxy panel showing VPN connection settings and local SOCKS5 and HTTP proxies](docs/desktop.png)
@@ -216,30 +215,6 @@ and certificate trust when a connection fails.
 Client documentation: [openfortivpn](https://github.com/adrienverge/openfortivpn),
 [microsocks](https://github.com/rofl0r/microsocks),
 [tinyproxy](https://tinyproxy.github.io/).
-
-## Publishing on GitHub
-
-Create `mkay1375/fortiproxy` on GitHub and push `main`. The
-[publishing workflow](.github/workflows/publish.yaml) runs backend tests, builds a
-local image, and checks proxy isolation and the SSL VPN protocol lab before
-publishing Linux AMD64/ARM64 images to GHCR. Pull requests run checks without
-publishing. GitHub's automatic `GITHUB_TOKEN` needs `packages: write`; no Docker
-Hub account or manually created token is required.
-
-| Trigger | Published tags |
-| --- | --- |
-| Push to `main` | `latest`, `sha-<full-commit-sha>` |
-| Push a `v` tag (e.g. `v1.0.0`) | Exact tag and SHA tag; leaves `latest` on the latest successful `main` build |
-| Manual workflow | Available on `main` or a `v` tag |
-
-The image name is derived from the GitHub repository. If renamed or moved, update
-the default image and download URL in this README and `compose.yaml`.
-
-After the first successful run, open your GitHub profile's **Packages → fortiproxy
-→ Package settings → Change visibility → Public**. Public source repositories do
-not automatically make GHCR packages public; public packages allow pulls without
-sign-in. See GitHub's [publishing guide](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)
-and [container registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
 ## License
 
