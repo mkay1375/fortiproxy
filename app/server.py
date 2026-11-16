@@ -66,7 +66,7 @@ class VPNManager:
         with self.lock:
             return {'state': self.state, 'message': self.message, 'connected_at': self.connected_at,
                     'interface': 'ppp0' if self.state == 'connected' else None,
-                    'proxies': {'socks': '127.0.0.1:1080', 'http': '127.0.0.1:8080'}}
+                    'proxies': {'socks': '127.0.0.1:1080', 'http': '127.0.0.1:8888'}}
 
     def connect(self, data):
         config = validate_config(data)
@@ -152,6 +152,8 @@ class VPNManager:
                 if self._alive(generation) and failure:
                     self.state, self.message = 'error', failure
                     self.connected_at = None
+                elif not self._alive(generation) and self.state == 'disconnecting':
+                    self.state, self.message = 'disconnected', 'Disconnected. Proxy traffic is blocked.'
 
     @staticmethod
     def _stop(process):

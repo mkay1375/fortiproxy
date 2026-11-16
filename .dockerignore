@@ -5,3 +5,5 @@ tests
 .secrets
 output
 *.conf.private
+docs
+*.cred

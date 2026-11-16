@@ -103,6 +103,24 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.manager.connect(CONFIG)
 
+    def test_delayed_teardown_finishes_disconnect_after_http_wait(self):
+        entered, release = threading.Event(), threading.Event()
+        def stop(process):
+            entered.set()
+            release.wait(2)
+            process.wait(1)
+        self.manager._stop = stop
+        self.manager.connect(CONFIG)
+        eventually(lambda: bool(self.spawned))
+        worker = self.manager.worker
+        join = worker.join
+        with patch.object(worker, 'join', side_effect=lambda timeout: join(.01)):
+            self.manager.disconnect()
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(self.manager.status()['state'], 'disconnecting')
+        release.set()
+        eventually(lambda: self.manager.status()['state'] == 'disconnected')
+
     def test_disconnect_waits_before_accepting_new_connection(self):
         entered, release = threading.Event(), threading.Event()
         def stop(_):

@@ -12,7 +12,8 @@ Install Docker Desktop (or use a Linux Docker engine), then run:
 docker compose up --build -d
 ```
 
-Open **http://localhost:8787**. Enter your gateway address, custom port, username
+Open **http://localhost:8787**. The HTTP proxy uses local port `8888` to avoid
+conflicting with services commonly using `8080`. Enter your gateway address, custom port, username
 and password, then select **Connect**. **Disconnect** stops the tunnel and blocks
 proxy egress. Restarting the container does not reconnect automatically.
 
@@ -28,13 +29,13 @@ Use these proxy addresses in your apps:
 | Proxy | Address |
 | --- | --- |
 | SOCKS5 | `127.0.0.1:1080` |
-| HTTP / HTTPS CONNECT | `127.0.0.1:8080` |
+| HTTP / HTTPS CONNECT | `127.0.0.1:8888` |
 
 For example, after connecting:
 
 ```sh
 curl --proxy socks5h://127.0.0.1:1080 https://example.com
-curl --proxy http://127.0.0.1:8080 https://example.com
+curl --proxy http://127.0.0.1:8888 https://example.com
 ```
 
 Use `socks5h` to resolve names inside the container. Apps that resolve names on
@@ -74,10 +75,11 @@ running without firewall protection.
 
 Proxy processes run as UID 10001 with no capabilities. Firewall rules allow new
 proxy traffic only through `ppp0`, including DNS, and allow replies to incoming
-proxy connections through Docker. Marked policy routing directs new proxy
+proxy connections through Docker. Marked policy routing and tunnel source translation direct new proxy
 connections through the VPN without changing routes used by the web panel or
 VPN gateway transport. An unreachable fallback and UID firewall remain in place
-when the tunnel disappears. IPv6 proxy egress is blocked. Internet availability
+when the tunnel disappears. Incoming VPN peers cannot access the panel or
+proxies, and IP forwarding is blocked. IPv6 proxy egress is blocked. Internet availability
 still depends on the VPN gateway permitting it; a corporate gateway may permit
 only private destinations.
 
@@ -98,10 +100,10 @@ FORTIPROXY_BIND=127.0.0.1 FORTIPROXY_RUNTIME=/tmp/fortiproxy-preview python3 -m 
 Preview mode is for reviewing the UI. Actual VPN connections require the
 container, root's network permissions, PPP and the firewall setup.
 
-The integration smoke harness, when present, creates isolated Docker networks
-and synthetic tunnel interfaces to test HTTP/SOCKS forwarding and fail-closed
-behavior. It never uses your real VPN configuration. It is not a FortiGate
-protocol emulator and does not validate authentication against a real server.
+Run `python3 tests/integration_smoke.py --image fortiproxy:local` after building
+the image. The harness creates isolated Docker networks and synthetic tunnel
+interfaces to test HTTP, CONNECT, SOCKS, DNS and fail-closed behavior. It never
+uses your real VPN configuration. It is not a FortiGate protocol emulator and does not validate authentication against a real server.
 
 Stop the service with `docker compose down`. Inspect health with
 `docker compose ps`. The control plane intentionally reports sanitized errors
@@ -111,3 +113,19 @@ MFA and certificate trust if a connection fails.
 Client documentation: [openfortivpn](https://github.com/adrienverge/openfortivpn),
 [microsocks](https://github.com/rofl0r/microsocks),
 [tinyproxy](https://tinyproxy.github.io/).
+
+## UI verification
+
+The browser smoke test uses mocked API responses, so it never logs in to a VPN.
+With Compose running, capture screenshots and verify the UI flows using:
+
+```sh
+mkdir -p /tmp/fortiproxy-screenshots
+docker run --rm --network container:$(docker compose ps -q fortiproxy) \
+  --entrypoint node \
+  -v "$PWD/tests/ui_smoke.cjs:/test.cjs:ro" \
+  -v /tmp/fortiproxy-screenshots:/artifacts \
+  mcr.microsoft.com/playwright/mcp:v0.0.83 /test.cjs
+```
+
+Desktop and mobile previews: [desktop](docs/desktop.png), [mobile](docs/mobile.png).
