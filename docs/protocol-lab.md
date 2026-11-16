@@ -27,7 +27,7 @@ suitable replacement for this protocol.
 Build the app, then run from the project folder:
 
 ```sh
-docker compose build
+docker compose -f compose.yaml -f compose.build.yaml build
 python3 tests/fortisslvpn_smoke.py --image fortiproxy:local
 ```
 

@@ -1,6 +1,8 @@
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends python3 openfortivpn ppp microsocks tinyproxy iproute2 iptables ca-certificates util-linux tini && rm -rf /var/lib/apt/lists/* && groupadd -g 10001 proxyvpn && useradd -u 10001 -g 10001 -M -s /usr/sbin/nologin proxyvpn
 WORKDIR /opt/fortiproxy
+LABEL org.opencontainers.image.licenses="MIT"
+COPY LICENSE ./LICENSE
 COPY app ./app
 COPY web ./web
 COPY scripts/firewall.sh /usr/local/bin/fortiproxy-firewall

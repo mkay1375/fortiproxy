@@ -1,159 +1,197 @@
 # Fortiproxy
 
-A local web panel for a Fortinet SSL VPN connection, exposed to individual apps
-through SOCKS5 and HTTP proxies. The VPN, DNS and routing live inside one Linux
-Docker container. macOS network settings are not modified.
+A local web panel for Fortinet SSL VPN, with SOCKS5 and HTTP proxies for individual
+apps. VPN, DNS and routing stay inside one Linux Docker container; host network
+settings are unchanged.
 
-## Start
+## Quick start
 
-Install Docker Desktop (or use a Linux Docker engine), then run:
+Install Docker Desktop or a Linux Docker engine with Compose, then download the
+Compose file and start the published image. No checkout or local build is needed:
 
 ```sh
-docker compose up --build -d
+mkdir -p fortiproxy
+cd fortiproxy
+curl -fL https://raw.githubusercontent.com/mkay1375/fortiproxy/main/compose.yaml -o compose.yaml
+docker compose pull
+docker compose up -d
 ```
 
-Open **http://localhost:48731**. The localhost ports are `48731` for the web UI,
-`48732` for SOCKS5, and `48733` for HTTP/HTTPS proxying. Enter your gateway
-address, custom port, username and password, then select **Connect**. **Disconnect** stops the tunnel and blocks
-proxy egress. Closing the browser page leaves an established VPN running. Use **Disconnect**
-to stop it. Stopping/recreating the container or losing the tunnel also ends the
-connection; restarting the container does not reconnect automatically.
+Already cloned the repo? Run the last two commands from its root.
+The image, `ghcr.io/mkay1375/fortiproxy:latest`, supports Linux AMD64 and ARM64,
+including Apple Silicon through Docker Desktop. It becomes available after the
+first successful publishing workflow and after the GHCR package is made public.
 
-Use **Test gateway** to check whether the gateway host and port accept a TCP
-connection from the container. This test has a five-second deadline and does not
-send credentials or validate TLS certificates or VPN login.
+Open **http://localhost:48731**, enter your gateway, port, username and password,
+then select **Connect**. Custom ports such as `10443` are supported.
 
-The supported connection type is **SSL VPN**, with password authentication,
-optional realm, optional one-time code, no client certificate, and an optional
-SHA-256 certificate fingerprint. A custom port such as `10443` is supported.
-Browser SSO/SAML, IPsec and client certificates are not supported by this panel.
-A configuration screenshot cannot prove that a specific server accepts the
-open-source client; server-side policies, MFA or endpoint checks may matter.
-
-Use these proxy addresses in your apps:
-
-| Proxy | Address |
+| Service | Local address |
 | --- | --- |
+| Web panel | `127.0.0.1:48731` |
 | SOCKS5 | `127.0.0.1:48732` |
 | HTTP / HTTPS CONNECT | `127.0.0.1:48733` |
 
-For example, after connecting:
+- **Disconnect** stops the tunnel and blocks proxy egress. Closing the browser leaves the VPN running.
+- Stopping/recreating the container or losing the tunnel ends the connection. Container restarts do not reconnect automatically.
+- **Test gateway** checks TCP access from the container with a five-second deadline. It sends no credentials and does not validate TLS or VPN login.
+
+### Use a proxy
+
+After connecting, configure your app with an address above, or try:
 
 ```sh
 curl --proxy socks5h://127.0.0.1:48732 https://example.com
 curl --proxy http://127.0.0.1:48733 https://example.com
 ```
 
-Use `socks5h` to resolve names inside the container. Apps that resolve names on
-the Mac before contacting SOCKS may use the Mac's existing DNS. HTTP CONNECT is
-allowed to ports 443 and 563; ordinary HTTP requests are supported. Proxies carry
-TCP traffic; they do not provide a general UDP tunnel.
+Use `socks5h` for DNS resolution inside the container. Apps resolving names on the
+Mac before contacting SOCKS may use the Mac's existing DNS. HTTP CONNECT permits
+ports 443 and 563; ordinary HTTP is also supported. Proxies carry TCP, not general
+UDP traffic. Internet access depends on the VPN gateway; corporate gateways may
+allow only private destinations.
 
-## Credentials and certificates
+### Update, stop or pin a version
 
-Connection settings save automatically as you edit and are restored when you open
-the UI. The saved fields are connection name, gateway, port, username, realm,
-certificate settings and the one-time code format. Password saving is off by
-default. **Save password** explicitly stores the base password in the same private
-file, unencrypted, in the local Docker data volume. One-time codes and the
-automatically concatenated password+code are never stored. The mode-0600 `/data/profile.json` file lives in the Compose
-`profile-data` named volume and survives container restarts and recreation.
-`docker compose down` retains it; `docker compose down -v` deletes it. Local
-Python previews use `data/profile.json` (or `FORTIPROXY_DATA`), excluded from Git.
+Run these commands in the Compose folder:
 
-For each connection, the backend writes a private mode-0600 openfortivpn
-configuration under `/run`, which is a tmpfs in Compose. The file is removed once connected, on failure or on disconnect.
-Credentials remain in process memory while needed; they are not logged or sent
-back through the status API. Re-enter credentials for the next connection.
+| Action | Command |
+| --- | --- |
+| Update (disconnects the active VPN by recreating the container) | `docker compose pull` then `docker compose up -d` |
+| Stop; keep saved profiles | `docker compose down` |
+| Stop; delete saved profiles and passwords | `docker compose down -v` |
+| Check health | `docker compose ps` |
 
-When saving is enabled, the UI shows a **Saved password** placeholder after
-reload; the profile API never returns the stored secret. Re-enter only the fresh
-one-time code when connecting. Unchecking Save password removes the stored
-password. Changing gateway, port, username or realm invalidates it unless you
-explicitly enter a new password for that connection.
+To pin a published version, create `.env` beside `compose.yaml`:
 
-The one-time code field sits beside Password. By default it is appended directly
-to the password, with no separator. Additional settings also offers a separate
-gateway challenge mode. The code and combined value are never included in the saved profile; only
-the base password can be stored with Save password enabled.
+```dotenv
+FORTIPROXY_IMAGE=ghcr.io/mkay1375/fortiproxy:v1.0.0
+```
 
-Certificate validation is enabled by default. Additional settings includes
-**Ignore certificate validation**, which accepts the certificate currently
-presented by the gateway without checking its identity. Encryption and TLS 1.2+
-stay enabled. This option is saved only when you select it; it is not enabled
-automatically. The backend obtains a fresh certificate digest for that attempt
-without sending credentials, then supplies it to openfortivpn. The observed
-digest is not persisted or added to macOS trust settings. Certificates changing
-between that probe and VPN negotiation may still cause the connection to fail.
-This is distinct from openfortivpn's `--insecure-ssl`, which relaxes protocol and
-cipher restrictions and is not used here.
+Replace `v1.0.0` with an existing release tag; remove the override to use `latest`.
 
-With validation enabled, normal CA/hostname checks apply, or you can enter a
-SHA-256 certificate fingerprint verified with your administrator. Leading or
-trailing spaces and control characters are rejected because openfortivpn's
-configuration parser would otherwise alter them.
+## Connection settings and security
+
+### Supported connections
+
+**SSL VPN** with password authentication, optional realm, optional one-time code
+and optional SHA-256 certificate fingerprint. Browser SSO/SAML, IPsec and client
+certificates are unsupported. A configuration screenshot cannot establish client
+compatibility: server policies, MFA and endpoint checks may affect login.
+
+The one-time code field is beside Password. By default, the code is appended to
+the password without a separator; **Additional settings** also offers separate
+gateway challenge mode.
+
+### Saved settings and credentials
+
+Settings save as you edit and reload with the UI: connection name, gateway, port,
+username, realm, certificate settings and one-time code format.
+
+- **Save password** is off by default. Enabling it stores the base password **unencrypted** in the private profile file. One-time codes and combined password+code values are never stored.
+- After reload, **Saved password** indicates a stored secret; the profile API never returns it. Enter only a fresh one-time code to connect.
+- Unchecking **Save password** removes the stored password. Changing gateway, port, username or realm invalidates it unless you explicitly enter a new password for that connection.
+
+The mode-0600 `/data/profile.json` lives in Compose's `profile-data` named volume
+and survives restarts and recreation. Local Python previews use
+`data/profile.json` (or `FORTIPROXY_DATA`), excluded from Git.
+
+Each connection uses a mode-0600 openfortivpn configuration under `/run` (a
+Compose tmpfs), removed once connected, on failure or on disconnect. Credentials
+stay in process memory while needed and are never logged or returned by the
+status API. Re-enter unsaved credentials for the next connection.
+
+### Certificates
+
+Validation is **on by default**: normal CA/hostname checks apply, or you can supply
+a SHA-256 fingerprint verified with your administrator. Leading/trailing spaces
+and control characters are rejected because openfortivpn's parser would alter them.
+
+**Additional settings → Ignore certificate validation** accepts the gateway's
+current certificate without verifying its identity. This explicit opt-out is saved
+only when selected; encryption and TLS 1.2+ remain enabled.
+
+For each opt-out attempt, the backend fetches a fresh certificate digest without sending
+credentials and passes it to openfortivpn. It neither saves the digest nor changes
+macOS trust settings. A certificate change between probing and negotiation can
+still fail the connection. This does not use openfortivpn's `--insecure-ssl`, which
+relaxes protocol and cipher restrictions.
+
+### Theme
+
+**Theme** defaults to **System** and follows system light/dark changes while the
+page is open. **Light** and **Dark** override it. Only the theme preference is
+stored in browser localStorage; credentials never are.
 
 ## Isolation
 
-Compose publishes the panel and both proxies only on IPv4 localhost. Do not
-change those bindings or share this service with untrusted local users: there
-is no proxy or UI login. Any local application can use the proxies while the
-VPN is connected. The API checks local Host and same-origin headers and requires
-a custom request header for changes.
+Compose binds the panel and proxies to **IPv4 localhost only**. Keep these
+bindings and do not share with untrusted local users: there is no UI or proxy
+login, and any local app can use a connected VPN. The API checks local Host and
+same-origin headers and requires a custom header for changes.
 
-The container uses bridge networking, `NET_ADMIN` and the Linux PPP device
-(major 108), created inside the container when necessary. It does not mount a
-Docker socket, credentials directory or host network namespace. No privileged
-container is required. A Linux kernel with PPP support is required; Docker
-Desktop supplies the Linux kernel on macOS. Startup fails rather than silently
-running without firewall protection.
+The container uses bridge networking, `NET_ADMIN` and a Linux PPP device (major
+108), created inside the container if needed. It needs no privileged mode and
+mounts no Docker socket, credentials directory or host network namespace. The
+Linux kernel must support PPP; Docker Desktop supplies it on macOS. Startup fails
+if firewall protection cannot be established.
 
-Proxy processes run as UID 10001 with no capabilities. Firewall rules allow new
-proxy traffic only through `ppp0`, including DNS, and allow replies to incoming
-proxy connections through Docker. Marked policy routing and tunnel source translation direct new proxy
-connections through the VPN without changing routes used by the web panel or
-VPN gateway transport. An unreachable fallback and UID firewall remain in place
-when the tunnel disappears. Incoming VPN peers cannot access the panel or
-proxies, and IP forwarding is blocked. IPv6 proxy egress is blocked. Internet availability
-still depends on the VPN gateway permitting it; a corporate gateway may permit
-only private destinations.
+Proxy processes run as UID 10001 without capabilities. Isolation includes:
+
+- New proxy traffic, including DNS, is allowed only through `ppp0`; replies to incoming proxy connections can return through Docker.
+- Marked policy routing and tunnel source translation route new proxy connections through the VPN, preserving routes for the panel and VPN gateway transport.
+- An unreachable fallback and UID firewall remain when the tunnel disappears.
+- Incoming VPN peers cannot reach the panel or proxies. IP forwarding and IPv6 proxy egress are blocked.
 
 ## Development and verification
 
-The backend has no Python dependencies beyond Python 3.11+:
+### Build or preview
+
+Build and start from source:
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up --build -d
+```
+
+The override builds `fortiproxy:local`. Keep both `-f` arguments in subsequent
+Compose commands, including `up` and `down`; default `compose.yaml` only pulls the
+published image.
+
+The backend requires Python 3.11+ with no external Python dependencies. Run tests:
 
 ```sh
 python3 -m unittest discover -s tests -v
 ```
 
-To preview the panel without Docker or connecting anywhere:
+Preview the UI without Docker or connecting anywhere:
 
 ```sh
 FORTIPROXY_BIND=127.0.0.1 FORTIPROXY_PORT=48731 FORTIPROXY_RUNTIME=/tmp/fortiproxy-preview python3 -m app.server
 ```
 
-Preview mode is for reviewing the UI. Actual VPN connections require the
-container, root's network permissions, PPP and the firewall setup.
+Actual VPN connections require the container, root's network permissions, PPP
+and firewall setup.
 
-Run `python3 tests/integration_smoke.py --image fortiproxy:local` after building
-the image. The harness creates isolated Docker networks and synthetic tunnel
-interfaces to test HTTP, CONNECT, SOCKS, DNS and fail-closed behavior. It never
-uses your real VPN configuration. It is not a FortiGate protocol emulator and does not validate authentication against a real server.
+### Proxy and protocol tests
 
-Stop the service with `docker compose down`. Inspect health with
-`docker compose ps`. The control plane classifies VPN client output into fixed, sanitized errors
-for certificate, login, network, TLS, option and PPP failures. Raw output is
-drained in memory and never logged, returned to the browser or saved on disk. Check gateway, credentials,
-MFA and certificate trust if a connection fails.
+```sh
+docker compose -f compose.yaml -f compose.build.yaml build
+python3 tests/integration_smoke.py --image fortiproxy:local
+```
 
-Client documentation: [openfortivpn](https://github.com/adrienverge/openfortivpn),
-[microsocks](https://github.com/rofl0r/microsocks),
-[tinyproxy](https://tinyproxy.github.io/).
+This harness uses isolated Docker networks and synthetic tunnels to test HTTP,
+CONNECT, SOCKS, DNS and fail-closed behavior. It never uses your VPN configuration,
+emulates FortiGate or validates real-server authentication.
 
-## UI verification
+The [local VPN protocol lab](docs/protocol-lab.md) runs real openfortivpn and pppd
+against a minimal compatible peer in isolated containers. It covers TLS/login/PPP
+and proxy flows, certificate rejection, bad passwords, DNS, HTTPS, disconnect and
+tunnel loss. The peer is a fixture, not FortiGate; vendor compatibility requires
+testing with an SSL-VPN-capable FortiGate VM or appliance.
 
-The browser smoke test uses mocked API responses, so it never logs in to a VPN.
-With Compose running, capture screenshots and verify the UI flows using:
+### UI tests
+
+With Compose running, verify UI flows and capture screenshots using mocked API
+responses (no VPN login):
 
 ```sh
 mkdir -p /tmp/fortiproxy-screenshots
@@ -164,19 +202,45 @@ docker run --rm --network container:$(docker compose ps -q fortiproxy) \
   mcr.microsoft.com/playwright/mcp:v0.0.83 /test.cjs
 ```
 
-Desktop and mobile previews: [desktop](docs/desktop.png), [mobile](docs/mobile.png).
+Previews: [desktop](docs/desktop.png), [mobile](docs/mobile.png).
 
-## Local VPN protocol lab
+### Troubleshooting
 
-For a repeatable local TLS/login/PPP/proxy test, see
-[the protocol lab](docs/protocol-lab.md). It runs real openfortivpn and pppd
-against a minimal compatible peer in isolated Docker containers, including
-certificate rejection, bad passwords, DNS, HTTPS, disconnect and tunnel loss.
-The peer is a test fixture, not Fortinet FortiGate; vendor compatibility remains
-subject to testing against an SSL-VPN-capable FortiGate VM or appliance.
+The control plane reports fixed, sanitized errors for certificate, login,
+network, TLS, option and PPP failures. Raw client output is drained in memory,
+never logged, returned to the browser or saved. Check gateway, credentials, MFA
+and certificate trust when a connection fails.
 
-## Appearance
+Client documentation: [openfortivpn](https://github.com/adrienverge/openfortivpn),
+[microsocks](https://github.com/rofl0r/microsocks),
+[tinyproxy](https://tinyproxy.github.io/).
 
-The Theme selector defaults to **System** and follows light/dark system changes
-while the page is open. Select **Light** or **Dark** for a manual override. Only
-the theme preference is kept in browser localStorage; credentials never are.
+## Publishing on GitHub
+
+Create `mkay1375/fortiproxy` on GitHub and push `main`. The
+[publishing workflow](.github/workflows/publish.yaml) runs backend tests, builds a
+local image, and checks proxy isolation and the SSL VPN protocol lab before
+publishing Linux AMD64/ARM64 images to GHCR. Pull requests run checks without
+publishing. GitHub's automatic `GITHUB_TOKEN` needs `packages: write`; no Docker
+Hub account or manually created token is required.
+
+| Trigger | Published tags |
+| --- | --- |
+| Push to `main` | `latest`, `sha-<full-commit-sha>` |
+| Push a `v` tag (e.g. `v1.0.0`) | Exact tag and SHA tag; leaves `latest` on the latest successful `main` build |
+| Manual workflow | Available on `main` or a `v` tag |
+
+The image name is derived from the GitHub repository. If renamed or moved, update
+the default image and download URL in this README and `compose.yaml`.
+
+After the first successful run, open your GitHub profile's **Packages → fortiproxy
+→ Package settings → Change visibility → Public**. Public source repositories do
+not automatically make GHCR packages public; public packages allow pulls without
+sign-in. See GitHub's [publishing guide](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)
+and [container registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
+
+## License
+
+[MIT](LICENSE): personal and commercial reuse, modification and redistribution
+are allowed with the copyright and license notice retained; no warranty is
+provided. Bundled third-party software keeps its own licenses and notices.

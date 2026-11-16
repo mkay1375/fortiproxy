@@ -1,7 +1,14 @@
 .git
 __pycache__
+**/__pycache__
+**/*.py[cod]
 tests
 .env
+.env.*
+.DS_Store
+.venv
+venv
+.github
 .secrets
 output
 *.conf.private

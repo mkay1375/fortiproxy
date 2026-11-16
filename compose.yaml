@@ -1,7 +1,6 @@
 services:
   fortiproxy:
-    build: .
-    image: fortiproxy:local
+    image: ${FORTIPROXY_IMAGE:-ghcr.io/mkay1375/fortiproxy:latest}
     init: false
     environment:
       FORTIPROXY_DATA: /data

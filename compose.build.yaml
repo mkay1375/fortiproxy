@@ -1,0 +1,4 @@
+services:
+  fortiproxy:
+    build: .
+    image: fortiproxy:local

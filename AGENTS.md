@@ -7,14 +7,16 @@
 - `scripts/`: startup, firewall rules, and Tinyproxy configuration.
 - `tests/`: unit tests, Docker harnesses, Playwright scripts, and SSL VPN test peer.
 - `docs/`: screenshots and [protocol lab instructions](docs/protocol-lab.md).
-- `Dockerfile` and `compose.yaml`: container packaging and localhost port bindings.
+- `Dockerfile`, `compose.yaml` and `compose.build.yaml`: published-image startup, local builds and localhost port bindings.
+- `.github/workflows/publish.yaml`: tests and multi-platform GHCR publishing.
 
 ## Build, Test, and Development Commands
 
-- `docker compose up --build -d`: start the panel on `8787`, SOCKS5 on `48732`, and HTTP proxy on `48733`.
+- `docker compose pull && docker compose up -d`: start the published image; panel on `48731`, SOCKS5 on `48732`, and HTTP proxy on `48733`.
+- `docker compose -f compose.yaml -f compose.build.yaml up --build -d`: build and start from source. Use both files for subsequent development Compose commands.
 - `python3 -m unittest discover -s tests -v`: run backend tests; requires Python 3.11+.
 - `FORTIPROXY_BIND=127.0.0.1 FORTIPROXY_PORT=48731 FORTIPROXY_RUNTIME=/tmp/fortiproxy-preview python3 -m app.server`: preview locally without VPN capabilities.
-- `docker compose build`: build `fortiproxy:local` before either Docker harness:
+- `docker compose -f compose.yaml -f compose.build.yaml build`: build `fortiproxy:local` before either Docker harness:
   - `python3 tests/integration_smoke.py --image fortiproxy:local`: synthetic tunnels, firewall, DNS, and isolation.
   - `python3 tests/fortisslvpn_smoke.py --image fortiproxy:local --ui --screenshots /tmp/fortiproxy-lab`: real openfortivpn/PPP and browser verification against an isolated test peer, not FortiGate.
 - `docker compose down`: stop services; `-v` also deletes saved profiles.
@@ -36,5 +38,7 @@ After review and committed, verified, pushed fixes, confirm the remote head matc
 ## Security & Agent Workflow
 
 Preserve localhost bindings, fail-closed routing, secret exclusion, and default certificate validation; keep opt-out explicit. Never commit credentials/runtime data.
+
+Keep the default Compose file usable without a source checkout. Publishing uses the automatic `GITHUB_TOKEN`; never add registry credentials to source. Keep GHCR owner/name references in Compose and README consistent. Publication requires passing tests; pull requests must not publish images.
 
 Read adjacent `RTK.md` if present. Keep updates brief and meaningful. For large tasks, delegate parts to subagents, commit each before dependent work, then review the whole change.

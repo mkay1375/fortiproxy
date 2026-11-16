@@ -105,6 +105,18 @@ with socket.create_connection(('127.0.0.1',8080),timeout=4) as connection:
             time.sleep(.2)
         else:
             raise AssertionError('Test server did not start')
+        # The peer can become ready before the app finishes firewall setup.
+        inside("""import time,urllib.error,urllib.request
+deadline=time.monotonic()+20
+while True:
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8787/api/status',timeout=1):
+            break
+    except urllib.error.URLError:
+        if time.monotonic()>=deadline:
+            raise
+        time.sleep(.2)
+""")
         wait_state('disconnected')
         pin = docker('exec', server, 'cat', '/tmp/fortiproxy-lab/fingerprint')
         certificate = docker('exec', server, 'cat', '/tmp/fortiproxy-lab/cert.pem')
